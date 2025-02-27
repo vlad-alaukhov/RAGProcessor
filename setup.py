@@ -1,12 +1,46 @@
-from distutils.core import setup
+from setuptools import setup, find_packages
+
+with open("README.md", "r", encoding="utf-8") as fh:
+    long_description = fh.read()
 
 setup(
-    name='RAGProcessor',
-    version='0.1.0',
-    packages=[''],
-    url='',
-    license='',
-    author='home',
-    author_email='',
-    description='Модуль для нейроконсультанта'
+    name="rag_processor",
+    version="0.1.0",
+    author="Vlad Alaukhov",
+    author_email="your.email@example.com",
+    description="RAG Processing Pipeline",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/vlad-alaukhov/rag-processor",
+    packages=find_packages(where="src"),
+    package_dir={"": "src"},
+    install_requires=[
+        "pymupdf>=1.23.0",
+        "langchain-core>=0.1.0",
+        "langchain-community>=0.0.1",
+        "langchain-openai>=0.0.1",
+        "tiktoken>=0.5.0",
+        "faiss-cpu>=1.7.0",
+        "python-dotenv>=1.0.0",
+        "requests>=2.26.0",
+        "huggingface_hub>=0.4.0",
+        "sentence-transformers>=2.2.0",
+        "transformers>=4.26.0",
+        "pydantic>=2.0.0",
+        "loguru>=0.7.0",
+        "langchain-huggingface>=0.0.2"
+    ],
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Intended Audience :: Developers",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence"
+    ],
+    python_requires=">=3.8",
+    keywords="rag ai nlp document-processing",
+    project_urls={
+        "Documentation": "https://github.com/vlad_alaukhov/rag-processor",
+        "Source Code": "https://github.com/vlad_alaukhov/rag-processor"
+    },
 )

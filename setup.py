@@ -13,7 +13,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/vlad-alaukhov/rag-processor",
     packages=find_packages(where="src"),
-    package_dir={"": "src"},
+    py_modules=['rag_processor'],
     install_requires=[
         "pymupdf>=1.23.0",
         "langchain-core>=0.1.0",

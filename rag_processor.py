@@ -78,8 +78,8 @@ class DBConstructor(RAGProcessor):
     @staticmethod
     def pdf_parser(files: str | list):
         """
-         Парсит текст из PDF-ок.
-         Ищет все PDF-ки в pdf_files, парсит текст в переменную text, Записывает в текстовый base_file
+        Парсит текст из PDF-ок.
+        Ищет все PDF-ки в pdf_files, парсит текст в переменную text, Записывает в текстовый base_file
         :param files: Путь/к/файлу.pdf или список файлов
         :return: Кортеж (Code, "Результат") Code: True, если всё в порядкеБ False, если ошибка.
         """

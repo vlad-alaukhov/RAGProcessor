@@ -76,27 +76,26 @@ class DBConstructor(RAGProcessor):
         self.processed_text = None
 
     @staticmethod
-    def pdf_parser(pdf_folder: str, base_file: str):
+    def pdf_parser(files: str | list):
         """
          Парсит текст из PDF-ок.
-         Ищет все PDF-ки в pdf_folder, парсит текст в переменную text, Записывает в текстовый base_file
-        :param pdf_folder:
-        :param base_file:
-        :return:
+         Ищет все PDF-ки в pdf_files, парсит текст в переменную text, Записывает в текстовый base_file
+        :param files: Путь/к/файлу.pdf или список файлов
+        :return: Кортеж (Code, "Результат") Code: True, если всё в порядкеБ False, если ошибка.
         """
-        all_files = os.listdir(pdf_folder)
-        pdf_files = [fn for fn in all_files if fn.endswith('.pdf')]
+        if files is None or len(files) == 0: return False, "Файл не выбран"
+        if type(files) == str: files = [files]
+        pdf_files = [fn for fn in files if fn.endswith('.pdf')]
 
         for each_pdf in pdf_files:
             try:
-                with fitz.open(os.path.join(pdf_folder, each_pdf)) as pdf:
+                with fitz.open(each_pdf) as pdf:
                     text = ""
                     for page in pdf:
                         text += page.get_text()
-                    with open(base_file, 'a') as bf:
-                        bf.write(text + '\n')
             except Exception as e:
-                print(f"Ошибка при обработке файла {each_pdf}: {e}")
+                return False, f"Ошибка при обработке файла {each_pdf}: {e}"
+        if text: return True, text
 
     @staticmethod
     def minus_words(file_name: str, pattern: str, to_change: str):

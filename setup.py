@@ -15,20 +15,20 @@ setup(
     packages=find_packages(where="src"),
     py_modules=['rag_processor'],
     install_requires=[
-        "pymupdf>=1.23.0",
-        "langchain-core>=0.1.0",
-        "langchain-community>=0.0.1",
-        "langchain-openai>=0.0.1",
-        "tiktoken>=0.5.0",
-        "faiss-cpu>=1.7.0",
-        "python-dotenv>=1.0.0",
-        "requests>=2.26.0",
-        "huggingface_hub>=0.4.0",
-        "sentence-transformers>=2.2.0",
-        "transformers>=4.26.0",
-        "pydantic>=2.0.0",
-        "loguru>=0.7.0",
-        "langchain-huggingface>=0.0.2"
+        "pymupdf==1.23.7"
+        "langchain-core==0.1.42"
+        "langchain-community==0.0.24"
+        "langchain-openai>=0.0.1"
+        "tiktoken>=0.5.0"
+        "faiss-cpu==1.8.0"
+        "python-dotenv>=1.0.0"
+        "requests>=2.26.0"
+        "huggingface_hub==0.22.2"
+        "sentence-transformers==2.7.0"
+        "transformers>=4.26.0"
+        "pydantic>=2.0.0"
+        "loguru>=0.7.0"
+        "langchain-huggingface==0.0.4"
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

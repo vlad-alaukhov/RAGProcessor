@@ -1,3 +1,4 @@
+import json
 from abc import ABC
 import fitz
 import os
@@ -267,8 +268,8 @@ class DBConstructor(RAGProcessor):
     def vectorizator_openai(self, docs: list, db_folder: str, model_name: str):
         embeddings = OpenAIEmbeddings(
             model=model_name,
-            openai_api_key = self.api_key,
-            openai_api_base = self.api_url)
+            api_key = self.api_key,
+            base_url = self.api_url)
         # embeddings.openai_api_key = self.api_key
         self.db = FAISS.from_documents(docs, embeddings)
         if self.db:
@@ -306,7 +307,6 @@ class DBConstructor(RAGProcessor):
 
             # Валидация параметров
             if not model_name:
-                print("Не указано название модели")
                 return False, "Не указано название модели"
 
             # Автоматические настройки для E5
@@ -327,8 +327,8 @@ class DBConstructor(RAGProcessor):
             if model_type == "openai":
                 embeddings = OpenAIEmbeddings(
                     model=model_name,
-                    openai_api_key=self.api_key,
-                    openai_api_base=self.api_url
+                    api_key=self.api_key,
+                    base_url=self.api_url
                 )
                 distance_strategy = "COSINE"
             elif model_type == "huggingface":
@@ -366,7 +366,8 @@ class DBConstructor(RAGProcessor):
         except Exception as e:
             return False, f"Ошибка векторизации: {str(e)}"
 
-    def _add_e5_prefixes(self, docs):
+    @staticmethod
+    def _add_e5_prefixes(docs):
         """Добавляет E5-префиксы к документам"""
         for doc in docs:
             if doc.page_content.startswith("query:") or doc.page_content.startswith("passage:"):
@@ -374,13 +375,14 @@ class DBConstructor(RAGProcessor):
             doc.page_content = f"passage: {doc.page_content}"
         return docs
 
-    def _get_embedding_dimension(self, embeddings):
+    @staticmethod
+    def _get_embedding_dimension(embeddings):
         """Определение размерности с обработкой исключений"""
         try:
             if isinstance(embeddings, OpenAIEmbeddings):
-                return embeddings.client.get_sentence_embedding_dimension()
+                return len(embeddings.embed_query("test"))
             elif isinstance(embeddings, HuggingFaceEmbeddings):
-                return embeddings.client.get_sentence_embedding_dimension()
+                return len(embeddings.embed_query("test"))
         except Exception as e:
             print(f"Ошибка определения размерности: {str(e)}")
         return "unknown"
@@ -398,8 +400,8 @@ class DBConstructor(RAGProcessor):
     def db_loader_from_openai(self, db_folder):
         embs = OpenAIEmbeddings(
             model="text-embedding-3-large",
-            openai_api_key=self.api_key,
-            openai_api_base=self.api_url)
+            api_key=self.api_key,
+            base_url=self.api_url)
         self.db = FAISS.load_local(
             folder_path=db_folder,
             embeddings=embs,

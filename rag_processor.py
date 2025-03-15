@@ -3,6 +3,8 @@ import fitz
 import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
 from langchain.docstore.document import Document
+# from langchain.docstore import Docstore
+# from typing import Dict, Any
 import tiktoken
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
@@ -293,6 +295,95 @@ class DBConstructor(RAGProcessor):
         else:
             return False, "Векторизация не прошла"
 
+    def vectorizator(self, docs: list, db_folder: str, **kwargs):
+        """Универсальный метод векторизации с автонастройкой для E5"""
+        print("Векторизую")
+        try:
+            model_type = kwargs.get("model_type", "huggingface").lower()
+            model_name = kwargs.get("model_name", "")
+            is_e5_model = "e5" in model_name.lower()
+            print(model_type, model_name)
+
+            # Валидация параметров
+            if not model_name:
+                print("Не указано название модели")
+                return False, "Не указано название модели"
+
+            # Автоматические настройки для E5
+            encode_kwargs = kwargs.get("encode_kwargs", {})
+            model_kwargs = kwargs.get("model_kwargs", {})
+
+            if is_e5_model:
+                # Принудительная нормализация и префиксы
+                encode_kwargs.update({
+                    'normalize_embeddings': True,
+                    'batch_size': 64,
+                    'convert_to_numpy': True
+                })
+                # Добавляем префиксы к текстам
+                docs = self._add_e5_prefixes(docs)
+
+            # Создаем эмбеддинги
+            if model_type == "openai":
+                embeddings = OpenAIEmbeddings(
+                    model=model_name,
+                    openai_api_key=self.api_key,
+                    openai_api_base=self.api_url
+                )
+                distance_strategy = "COSINE"
+            elif model_type == "huggingface":
+                embeddings = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    model_kwargs=model_kwargs,
+                    encode_kwargs=encode_kwargs
+                )
+                distance_strategy = "COSINE" if is_e5_model else "L2"
+            else:
+                return False, f"Неподдерживаемый тип модели: {model_type}"
+
+            # Создаем и сохраняем индекс
+            self.db = FAISS.from_documents(
+                documents=docs,
+                embedding=embeddings,
+                distance_strategy=distance_strategy
+            )
+            self.db.save_local(db_folder)
+
+            # Сохраняем метаданные с дополнительными параметрами
+            metadata = {
+                "embedding_model": model_name,
+                "model_type": model_type,
+                "dimension": self._get_embedding_dimension(embeddings),
+                "normalized": encode_kwargs.get('normalize_embeddings', False),
+                "distance_strategy": distance_strategy,
+                "is_e5_model": is_e5_model
+            }
+            with open(os.path.join(db_folder, "metadata.json"), "w") as f:
+                json.dump(metadata, f)
+
+            return True, f"База успешно создана в {db_folder}"
+
+        except Exception as e:
+            return False, f"Ошибка векторизации: {str(e)}"
+
+    def _add_e5_prefixes(self, docs):
+        """Добавляет E5-префиксы к документам"""
+        for doc in docs:
+            if doc.page_content.startswith("query:") or doc.page_content.startswith("passage:"):
+                continue
+            doc.page_content = f"passage: {doc.page_content}"
+        return docs
+
+    def _get_embedding_dimension(self, embeddings):
+        """Определение размерности с обработкой исключений"""
+        try:
+            if isinstance(embeddings, OpenAIEmbeddings):
+                return embeddings.client.get_sentence_embedding_dimension()
+            elif isinstance(embeddings, HuggingFaceEmbeddings):
+                return embeddings.client.get_sentence_embedding_dimension()
+        except Exception as e:
+            print(f"Ошибка определения размерности: {str(e)}")
+        return "unknown"
 
     def db_loader_from_sota(self, db_folder: str, model_name: str):
         model_kwargs = {'device': 'cpu'}
@@ -315,6 +406,9 @@ class DBConstructor(RAGProcessor):
             allow_dangerous_deserialization=True
         )
         return self.db
+
+    def my_func(self):
+        print("My_function")
 
 class Tester(DBConstructor):
     def __init__(self):

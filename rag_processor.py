@@ -2,6 +2,7 @@ import json
 from abc import ABC
 import fitz
 import os
+import shutil
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
 from langchain.docstore.document import Document
 # from langchain.docstore import Docstore
@@ -301,16 +302,13 @@ class DBConstructor(RAGProcessor):
 
     def vectorizator(self, docs: list, db_folder: str, **kwargs):
         """Универсальный метод векторизации с автонастройкой для E5"""
-        print("Векторизую")
         try:
             model_type = kwargs.get("model_type", "huggingface").lower()
             model_name = kwargs.get("model_name", "")
             is_e5_model = "e5" in model_name.lower()
-            print(model_type, model_name)
 
             # Валидация параметров
-            if not model_name:
-                return False, "Не указано название модели"
+            if not model_name: return False, "Не указано название модели"
 
             # Автоматические настройки для E5
             encode_kwargs = kwargs.get("encode_kwargs", {})
@@ -361,8 +359,13 @@ class DBConstructor(RAGProcessor):
                 "distance_strategy": distance_strategy,
                 "is_e5_model": is_e5_model
             }
-            with open(os.path.join(db_folder, "metadata.json"), "w") as f:
-                json.dump(metadata, f)
+            try:
+                with open(os.path.join(db_folder, "metadata.json"), "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+            except (PermissionError, OSError) as e:
+                return False, f"Ошибка записи метаданных: {str(e)}"
+            except (TypeError, json.JSONDecodeError) as e:
+                return False, f"Ошибка формата метаданных: {str(e)}"
 
             return True, f"База успешно создана в {db_folder}"
 
@@ -458,8 +461,15 @@ class DBConstructor(RAGProcessor):
         try:
             with open(meta_path, "r") as f:
                 return json.load(f)
-        except :
-            return None
+        except FileNotFoundError:
+                print(f"Файл метаданных не найден: {meta_path}")
+        except json.JSONDecodeError as e:
+            print(f"Ошибка формата JSON: {e}")
+        except PermissionError:
+            print(f"Нет прав на чтение файла: {meta_path}")
+        except Exception as e:
+            print(f"Неизвестная ошибка: {e}")
+        return None
 
     @staticmethod
     def _check_compatibility(meta1: dict, meta2: dict) -> bool:

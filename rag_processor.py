@@ -7,6 +7,7 @@ from langchain.docstore.document import Document
 # from langchain.docstore import Docstore
 # from typing import Dict, Any
 import tiktoken
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 import re                 # работа с регулярными выражениями
@@ -14,6 +15,8 @@ import requests
 from dotenv import load_dotenv
 import time
 from langchain_huggingface import HuggingFaceEmbeddings
+from typing import List, Any
+from langchain_core.embeddings import Embeddings
 
 class RAG(ABC):
     def __init__(self):
@@ -387,6 +390,9 @@ class DBConstructor(RAGProcessor):
             print(f"Ошибка определения размерности: {str(e)}")
         return "unknown"
 
+    def faiss_loader(self, db_folder):
+        pass
+
     def db_loader_from_sota(self, db_folder: str, model_name: str):
         model_kwargs = {'device': 'cpu'}
         encode_kwargs = {'normalize_embeddings': False}
@@ -409,8 +415,112 @@ class DBConstructor(RAGProcessor):
         )
         return self.db
 
-    def my_func(self):
-        print("My_function")
+    def merge_databases(self, input_folders: List[str], output_folder: str) -> tuple:
+        """
+        Объединяет несколько FAISS-баз с проверкой совместимости
+        Возвращает (success: bool, message: str)
+        """
+        try:
+            # 1. Проверка минимального количества баз
+            if len(input_folders) < 2: return False, "Необходимо минимум 2 базы для объединения"
+
+            # 2. Загрузка и проверка метаданных
+            main_meta = self._load_metadata(input_folders[0])
+            if not main_meta: return False, f"Не найдены метаданные в {input_folders[0]}"
+
+            # 3. Проверка совместимости всех баз
+            for folder in input_folders[1:]:
+                current_meta = self._load_metadata(folder)
+                if not self._check_compatibility(main_meta, current_meta):
+                    msg = f"Несовместимые базы:\n{main_meta['embedding_model']}\nи\n{current_meta['embedding_model']}"
+                    return False, msg
+
+            # 4. Загрузка эмбеддингов
+            embeddings = self._load_embeddings(main_meta)
+            if not embeddings: return False, "Ошибка загрузки модели эмбеддингов"
+
+            # 5. Объединение баз
+            merged_db = self._merge_faiss_indexes(input_folders, embeddings)
+
+            # 6. Сохранение результата
+            merged_db.save_local(output_folder)
+            self._save_merged_metadata(output_folder, main_meta)
+
+            return True, f"Базы успешно объединены в {output_folder}"
+
+        except Exception as e:
+            return False, f"Критическая ошибка: {str(e)}"
+
+    @staticmethod
+    def _load_metadata(folder: str) -> Any | None:
+        """Загружает метаданные из папки с базой"""
+        meta_path = os.path.join(folder, "metadata.json")
+        try:
+            with open(meta_path, "r") as f:
+                return json.load(f)
+        except :
+            return None
+
+    @staticmethod
+    def _check_compatibility(meta1: dict, meta2: dict) -> bool:
+        """Проверяет совместимость метаданных двух баз"""
+        required_keys = [
+            'embedding_model',
+            'model_type',
+            'normalized',
+            'distance_strategy'
+        ]
+
+        for key in required_keys:
+            if meta1.get(key) != meta2.get(key):
+                return False
+        return True
+
+    def _load_embeddings(self, metadata: dict) -> None | HuggingFaceEmbeddings | OpenAIEmbeddings:
+        """Инициализирует модель эмбеддингов на основе метаданных"""
+        try:
+            if metadata['model_type'] == "openai":
+                from langchain_openai import OpenAIEmbeddings
+                return OpenAIEmbeddings(
+                    model=metadata['embedding_model'],
+                    api_key=self.api_key,
+                    base_url=self.api_url
+                )
+
+            elif metadata['model_type'] == "huggingface":
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+                return HuggingFaceEmbeddings(
+                    model_name=metadata['embedding_model'],
+                    encode_kwargs={'normalize_embeddings': metadata['normalized']}
+                )
+
+            return None
+        except:
+            return None
+
+    @staticmethod
+    def _merge_faiss_indexes(folders: List[str], embeddings: Embeddings) -> FAISS:
+        """Объединяет FAISS-индексы"""
+        merged_db = FAISS.load_local(folders[0], embeddings)
+
+        for folder in folders[1:]:
+            current_db = FAISS.load_local(folder, embeddings)
+            merged_db.merge_from(current_db)
+
+        return merged_db
+
+    @staticmethod
+    def _save_merged_metadata(output_folder: str, meta: dict):
+        """Создает расширенные метаданные для объединенной базы"""
+        merged_meta = {
+            "embedding_model": meta["embedding_model"],
+            "model_type": meta["model_type"],
+            "normalized": meta["normalized"],
+            "distance_strategy": meta["distance_strategy"]
+        }
+
+        with open(os.path.join(output_folder, "metadata.json"), "w") as f:
+            json.dump(merged_meta, f, indent=2)
 
 class Tester(DBConstructor):
     def __init__(self):

@@ -536,8 +536,7 @@ class DBConstructor(RAGProcessor):
         ]
 
         for key in required_keys:
-            if meta1.get(key) != meta2.get(key):
-                return False
+            if meta1.get(key) != meta2.get(key): return False
         return True
 
     def _load_embeddings(self, metadata: dict) -> (tuple[str, None] | tuple[str, HuggingFaceEmbeddings] |

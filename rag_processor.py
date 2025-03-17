@@ -16,7 +16,7 @@ import requests
 from dotenv import load_dotenv
 import time
 from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Any
+from typing import List, Any, Dict
 from langchain_core.embeddings import Embeddings
 
 class RAG(ABC):
@@ -73,6 +73,8 @@ class RAGProcessor(RAG):
 class DBConstructor(RAGProcessor):
     def __init__(self):
         super().__init__()
+        self.embeddings = None
+        self.db_metadata = None
         self.chunk_size = 700
         self.source_chunks = None
         self.num_tokens = 0
@@ -269,6 +271,8 @@ class DBConstructor(RAGProcessor):
 
         return code, result_text
 
+    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
+    # V
     def vectorizator_openai(self, docs: list, db_folder: str, model_name: str):
         embeddings = OpenAIEmbeddings(
             model=model_name,
@@ -299,6 +303,8 @@ class DBConstructor(RAGProcessor):
             else: return False, "Векторизация прошла, но загрузка не удалась"
         else:
             return False, "Векторизация не прошла"
+    # ^
+    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
 
     def vectorizator(self, docs: list, db_folder: str, **kwargs):
         """Универсальный метод векторизации с автонастройкой для E5"""
@@ -393,9 +399,56 @@ class DBConstructor(RAGProcessor):
             print(f"Ошибка определения размерности: {str(e)}")
         return "unknown"
 
-    def faiss_loader(self, db_folder):
-        pass
+    def faiss_loader(self, db_folder: str) -> Dict[str, Any]:
+        """
+        Возвращает словарь с ключами:
+        - success: bool - флаг успеха операции
+        - db: Optional[FAISS] - объект базы (при успехе)
+        - is_e5: bool - флаг использования E5 (при успехе)
+        - error: str - сообщение об ошибке (при неудаче)
+        """
+        result = {
+            "success": False,
+            "db": None,
+            "is_e5_model": False,
+            "error": ""
+        }
 
+        try:
+            # 1. Проверка существования папки
+            if not os.path.isdir(db_folder): raise FileNotFoundError(f"Папка {db_folder} не существует")
+
+            # 2. Загрузка метаданных
+            metadata = self._load_metadata(db_folder)
+            if metadata is None: raise ValueError("Невалидные метаданные базы")
+
+            result["is_e5_model"] = metadata.get("is_e5_model", False)
+
+            # 3. Проверка файлов FAISS
+            required_files = ["index.faiss", "index.pkl"]
+            missing = [f for f in required_files if not os.path.exists(os.path.join(db_folder, f))]
+            if missing: raise FileNotFoundError(f"Отсутствуют файлы: {missing}")
+
+            # 4. Загрузка эмбеддингов
+            res, embeddings = self._load_embeddings(metadata)
+            if embeddings is None: raise RuntimeError("Ошибка загрузки модели эмбеддингов")
+
+            # 5. Основная загрузка
+            result["db"] = FAISS.load_local(
+                db_folder,
+                embeddings,
+                allow_dangerous_deserialization=True
+            )
+
+            result["success"] = True
+            return result
+
+        except Exception as e:
+            result["error"] = f"{type(e).__name__}: {str(e)}"
+            return result
+
+    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
+    # V
     def db_loader_from_sota(self, db_folder: str, model_name: str):
         model_kwargs = {'device': 'cpu'}
         encode_kwargs = {'normalize_embeddings': False}
@@ -417,6 +470,8 @@ class DBConstructor(RAGProcessor):
             allow_dangerous_deserialization=True
         )
         return self.db
+    # ^
+    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
 
     def merge_databases(self, input_folders: List[str], output_folder: str) -> tuple:
         """
@@ -428,8 +483,8 @@ class DBConstructor(RAGProcessor):
             if len(input_folders) < 2: return False, "Необходимо минимум 2 базы для объединения"
 
             # 2. Загрузка и проверка метаданных
-            main_meta = self._load_metadata(input_folders[0])
-            if not main_meta: return False, f"Не найдены метаданные в {input_folders[0]}"
+            result, main_meta = self._load_metadata(input_folders[0])
+            if not main_meta: return False, result
 
             # 3. Проверка совместимости всех баз
             for folder in input_folders[1:]:
@@ -439,8 +494,8 @@ class DBConstructor(RAGProcessor):
                     return False, msg
 
             # 4. Загрузка эмбеддингов
-            e, embeddings = self._load_embeddings(main_meta)
-            if not embeddings: return False, "Ошибка загрузки модели эмбеддингов"
+            err_code, embeddings = self._load_embeddings(main_meta)
+            if not embeddings: return False, err_code
 
             # 5. Объединение баз
             merged_db = self._merge_faiss_indexes(input_folders, embeddings)
@@ -460,16 +515,15 @@ class DBConstructor(RAGProcessor):
         meta_path = os.path.join(folder, "metadata.json")
         try:
             with open(meta_path, "r") as f:
-                return json.load(f)
+                return "Успешно", json.load(f)
         except FileNotFoundError:
-                print(f"Файл метаданных не найден: {meta_path}")
+            return f"Файл метаданных не найден: {meta_path}", None
         except json.JSONDecodeError as e:
-            print(f"Ошибка формата JSON: {e}")
+            return f"Ошибка формата JSON: {e}", None
         except PermissionError:
-            print(f"Нет прав на чтение файла: {meta_path}")
+            return f"Нет прав на чтение файла: {meta_path}", None
         except Exception as e:
-            print(f"Неизвестная ошибка: {e}")
-        return None
+            return f"Неизвестная ошибка: {e}", None
 
     @staticmethod
     def _check_compatibility(meta1: dict, meta2: dict) -> bool:
@@ -486,8 +540,8 @@ class DBConstructor(RAGProcessor):
                 return False
         return True
 
-    def _load_embeddings(self, metadata: dict) -> tuple[str, None] | tuple[
-        str, HuggingFaceEmbeddings | HuggingFaceEmbeddings] | tuple[str, OpenAIEmbeddings]:
+    def _load_embeddings(self, metadata: dict) -> (tuple[str, None] | tuple[str, HuggingFaceEmbeddings] |
+                                                   tuple[str, OpenAIEmbeddings]):
         """Инициализирует модель эмбеддингов на основе метаданных"""
         try:
             model_type = metadata['model_type']
@@ -505,20 +559,17 @@ class DBConstructor(RAGProcessor):
                     encode_kwargs={'normalize_embeddings': metadata['normalized']}
                 )
             else:
-                raise ValueError(
-                    f"Неподдерживаемый тип модели: {model_type}. "
-                    "Доступные варианты: 'openai', 'huggingface'"
-                )
+                raise ValueError(f"Неподдерживаемый тип модели: {model_type}. Доступные варианты: openai, huggingface")
 
+
+        except ValueError as e: # Специфичная обработка ошибок валидации
+            return f"Ошибка валидации: {str(e)}", None
         except KeyError as e:
-            result = f"Отсутствует обязательное поле в метаданных: {str(e)}"
-            return result, None
+            return f"Отсутствует обязательное поле в метаданных: {str(e)}", None
         except ImportError as e:
-            result = f"Ошибка импорта модуля: {str(e)}"
-            return result, None
+            return f"Ошибка импорта модуля: {str(e)}", None
         except Exception as e:
-            result = f"Неизвестная ошибка при загрузке эмбеддингов: {str(e)}"
-            return result, None
+            return f"Неизвестная ошибка при загрузке эмбеддингов: {str(e)}", None
 
     @staticmethod
     def _merge_faiss_indexes(folders: List[str], embeddings: Embeddings) -> FAISS:

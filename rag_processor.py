@@ -439,7 +439,7 @@ class DBConstructor(RAGProcessor):
                     return False, msg
 
             # 4. Загрузка эмбеддингов
-            embeddings = self._load_embeddings(main_meta)
+            e, embeddings = self._load_embeddings(main_meta)
             if not embeddings: return False, "Ошибка загрузки модели эмбеддингов"
 
             # 5. Объединение баз
@@ -486,35 +486,47 @@ class DBConstructor(RAGProcessor):
                 return False
         return True
 
-    def _load_embeddings(self, metadata: dict) -> None | HuggingFaceEmbeddings | OpenAIEmbeddings:
+    def _load_embeddings(self, metadata: dict) -> tuple[str, None] | tuple[
+        str, HuggingFaceEmbeddings | HuggingFaceEmbeddings] | tuple[str, OpenAIEmbeddings]:
         """Инициализирует модель эмбеддингов на основе метаданных"""
         try:
+            model_type = metadata['model_type']
+            model_name = metadata['embedding_model']
             if metadata['model_type'] == "openai":
-                from langchain_openai import OpenAIEmbeddings
-                return OpenAIEmbeddings(
-                    model=metadata['embedding_model'],
+                return "Успешно", OpenAIEmbeddings(
+                    model=model_name,
                     api_key=self.api_key,
                     base_url=self.api_url
                 )
 
             elif metadata['model_type'] == "huggingface":
-                from langchain_community.embeddings import HuggingFaceEmbeddings
-                return HuggingFaceEmbeddings(
-                    model_name=metadata['embedding_model'],
+                return "Успешно", HuggingFaceEmbeddings(
+                    model_name=model_name,
                     encode_kwargs={'normalize_embeddings': metadata['normalized']}
                 )
+            else:
+                raise ValueError(
+                    f"Неподдерживаемый тип модели: {model_type}. "
+                    "Доступные варианты: 'openai', 'huggingface'"
+                )
 
-            return None
-        except:
-            return None
+        except KeyError as e:
+            result = f"Отсутствует обязательное поле в метаданных: {str(e)}"
+            return result, None
+        except ImportError as e:
+            result = f"Ошибка импорта модуля: {str(e)}"
+            return result, None
+        except Exception as e:
+            result = f"Неизвестная ошибка при загрузке эмбеддингов: {str(e)}"
+            return result, None
 
     @staticmethod
     def _merge_faiss_indexes(folders: List[str], embeddings: Embeddings) -> FAISS:
         """Объединяет FAISS-индексы"""
-        merged_db = FAISS.load_local(folders[0], embeddings)
+        merged_db = FAISS.load_local(folders[0], embeddings, allow_dangerous_deserialization=True)
 
         for folder in folders[1:]:
-            current_db = FAISS.load_local(folder, embeddings)
+            current_db = FAISS.load_local(folder, embeddings, allow_dangerous_deserialization=True)
             merged_db.merge_from(current_db)
 
         return merged_db
@@ -525,6 +537,7 @@ class DBConstructor(RAGProcessor):
         merged_meta = {
             "embedding_model": meta["embedding_model"],
             "model_type": meta["model_type"],
+            "dimension": meta["dimension"],
             "normalized": meta["normalized"],
             "distance_strategy": meta["distance_strategy"]
         }
@@ -532,6 +545,7 @@ class DBConstructor(RAGProcessor):
         with open(os.path.join(output_folder, "metadata.json"), "w") as f:
             json.dump(merged_meta, f, indent=2)
 
+#===================================================================================================
 class Tester(DBConstructor):
     def __init__(self):
         super().__init__()

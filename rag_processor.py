@@ -271,41 +271,6 @@ class DBConstructor(RAGProcessor):
 
         return code, result_text
 
-    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
-    # V
-    def vectorizator_openai(self, docs: list, db_folder: str, model_name: str):
-        embeddings = OpenAIEmbeddings(
-            model=model_name,
-            api_key = self.api_key,
-            base_url = self.api_url)
-        # embeddings.openai_api_key = self.api_key
-        self.db = FAISS.from_documents(docs, embeddings)
-        if self.db:
-            self.db.save_local(db_folder)
-            if os.path.exists(db_folder):
-                return True, f"Векторизация прошла успешно в\n{db_folder}"
-            else:
-                return False, "Векторизация прошла, но загрузка не удалась"
-        else:
-            return False, "Векторизация не прошла"
-
-    def vectorizator_sota(self, docs: list, db_folder: str, model_name: str):
-        model_kwargs = {'device': 'cpu'}
-        encode_kwargs = {'normalize_embeddings': False}
-        embeddings = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs)
-        self.db = FAISS.from_documents(docs, embeddings)
-        if self.db:
-            self.db.save_local(db_folder)
-            if os.path.exists(db_folder): return True, f"Векторизация прошла успешно в\n{db_folder}"
-            else: return False, "Векторизация прошла, но загрузка не удалась"
-        else:
-            return False, "Векторизация не прошла"
-    # ^
-    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
-
     def vectorizator(self, docs: list, db_folder: str, **kwargs):
         """Универсальный метод векторизации с автонастройкой для E5"""
         try:
@@ -447,32 +412,6 @@ class DBConstructor(RAGProcessor):
             result["error"] = f"{type(e).__name__}: {str(e)}"
             return result
 
-    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
-    # V
-    def db_loader_from_sota(self, db_folder: str, model_name: str):
-        model_kwargs = {'device': 'cpu'}
-        encode_kwargs = {'normalize_embeddings': False}
-        embeddings = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs)
-        self.db = FAISS.load_local(db_folder, embeddings, allow_dangerous_deserialization=True)
-        return self.db
-
-    def db_loader_from_openai(self, db_folder):
-        embs = OpenAIEmbeddings(
-            model="text-embedding-3-large",
-            api_key=self.api_key,
-            base_url=self.api_url)
-        self.db = FAISS.load_local(
-            folder_path=db_folder,
-            embeddings=embs,
-            allow_dangerous_deserialization=True
-        )
-        return self.db
-    # ^
-    # x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-
-
     def merge_databases(self, input_folders: List[str], output_folder: str) -> tuple:
         """
         Объединяет несколько FAISS-баз с проверкой совместимости
@@ -488,7 +427,7 @@ class DBConstructor(RAGProcessor):
 
             # 3. Проверка совместимости всех баз
             for folder in input_folders[1:]:
-                current_meta = self._load_metadata(folder)
+                result, current_meta = self._load_metadata(folder)
                 if not self._check_compatibility(main_meta, current_meta):
                     msg = f"Несовместимые базы:\n{main_meta['embedding_model']}\nи\n{current_meta['embedding_model']}"
                     return False, msg
@@ -524,6 +463,9 @@ class DBConstructor(RAGProcessor):
             return f"Нет прав на чтение файла: {meta_path}", None
         except Exception as e:
             return f"Неизвестная ошибка: {e}", None
+
+    def metadata_loader(self, folder):
+        return self._load_metadata(folder)
 
     @staticmethod
     def _check_compatibility(meta1: dict, meta2: dict) -> bool:

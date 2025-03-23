@@ -34,7 +34,7 @@ class RAGProcessor(RAG):
     def __init__(self):
         super().__init__()
 
-    def request_to_openai(self, system: str, request: str, temper: float):
+    def request_to_openai(self, system: str, request: str, temper: float, verbose=False):
         attempts = 1
 
         headers = {
@@ -51,16 +51,24 @@ class RAGProcessor(RAG):
             "temperature": temper,
         }
 
+        if verbose:
+            print("===============================================")
+            print("system: ", system)
+            print("-----------------------------------------------")
+            print("user: ", request)
+            print("-----------------------------------------------")
+
         while attempts < 3:
             try:
                 time.sleep(10)
                 # Отправляем POST-запрос к модели
-                response = requests.post("https://api.vsegpt.ru:6070/v1/chat/completions", headers=headers, json=payload)
+                response = requests.post("https://api.vsegpt.ru:6010/v1/chat/completions", headers=headers, json=payload)
                 response.raise_for_status()  # Проверка на наличие ошибок в запросе
 
                 # Получаем ответ от модели
                 response_data = response.json()
                 result_text = response_data['choices'][0]['message']['content']
+                if verbose: print("Ответ модели: ", result_text)
                 return True, result_text
 
             except Exception as e:
@@ -145,7 +153,7 @@ class DBConstructor(RAGProcessor):
         self.source_chunks = splitter.split_text(text)
         return self.source_chunks
 
-    def split_recursive_from_markdown(self, documents_to_split: list, chunk_size: int) -> list:
+    def split_recursive_from_markdown(self, documents_to_split: list, chunk_size: int, verbose=False) -> list:
         """ Делит список Langchain документов documents_to_split на чанки размером chunk_size
         методом RecursiveCharacterTextSplitter. Для этого вызывается метод split_text_recursive,
         реализованный в этом же классе.
@@ -154,13 +162,18 @@ class DBConstructor(RAGProcessor):
         :return: список Langchain документов
         """
         source_chunks = []
+        if verbose: print(f"Поступило чанков для разбиения: {len(documents_to_split)}")
 
         for each_document in documents_to_split:
+            header = ''
             new_chunks = self.split_text_recursive(each_document.page_content, chunk_size)
+            if verbose: print(f"Чанков после разбиения: {len(new_chunks)}")
             for each_element in new_chunks:
-                for key in each_document.metadata:
-                    each_element += each_document.metadata[key]
-                source_chunks.append(Document(page_content=each_element, metadata=each_document.metadata))
+                if len(each_element) > 1:
+                    for key in each_document.metadata:
+                        header += f"{each_document.metadata[key]}. "
+                source_chunks.append(Document(page_content=header+each_element, metadata=each_document.metadata))
+        if verbose: print(f"Чанков всего: {len(source_chunks)}")
 
         return source_chunks
 
@@ -175,13 +188,6 @@ class DBConstructor(RAGProcessor):
 
         markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
         fragments = markdown_splitter.split_text(db_text)
-
-        for fragment in fragments:
-            header = ''
-            for key in fragment.metadata:
-                header += f"{fragment.metadata[key]}. "
-            fragment.page_content = header + fragment.page_content
-            print(fragment)
 
         return fragments
 
@@ -303,6 +309,7 @@ class DBConstructor(RAGProcessor):
                     base_url=self.api_url
                 )
                 distance_strategy = "COSINE"
+
             elif model_type == "huggingface":
                 embeddings = HuggingFaceEmbeddings(
                     model_name=model_name,
@@ -327,7 +334,7 @@ class DBConstructor(RAGProcessor):
                 "model_type": model_type,
                 "dimension": self._get_embedding_dimension(embeddings),
                 "normalized": encode_kwargs.get('normalize_embeddings', False),
-                "distance_strategy": distance_strategy,
+               "distance_strategy": distance_strategy,
                 "is_e5_model": is_e5_model
             }
             try:
@@ -384,7 +391,7 @@ class DBConstructor(RAGProcessor):
             if not os.path.isdir(db_folder): raise FileNotFoundError(f"Папка {db_folder} не существует")
 
             # 2. Загрузка метаданных
-            metadata = self._load_metadata(db_folder)
+            code, metadata = self._load_metadata(db_folder)
             if metadata is None: raise ValueError("Невалидные метаданные базы")
 
             result["is_e5_model"] = metadata.get("is_e5_model", False)
@@ -474,7 +481,8 @@ class DBConstructor(RAGProcessor):
             'embedding_model',
             'model_type',
             'normalized',
-            'distance_strategy'
+            'distance_strategy',
+            'is_e5_model'
         ]
 
         for key in required_keys:
@@ -531,7 +539,8 @@ class DBConstructor(RAGProcessor):
             "model_type": meta["model_type"],
             "dimension": meta["dimension"],
             "normalized": meta["normalized"],
-            "distance_strategy": meta["distance_strategy"]
+            "distance_strategy": meta["distance_strategy"],
+            "is_e5_model": meta["is_e5_model"]
         }
 
         with open(os.path.join(output_folder, "metadata.json"), "w") as f:

@@ -334,7 +334,7 @@ class DBConstructor(RAGProcessor):
                 "model_type": model_type,
                 "dimension": self._get_embedding_dimension(embeddings),
                 "normalized": encode_kwargs.get('normalize_embeddings', False),
-               "distance_strategy": distance_strategy,
+                "distance_strategy": distance_strategy,
                 "is_e5_model": is_e5_model
             }
             try:

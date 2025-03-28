@@ -34,7 +34,7 @@ class RAGProcessor(RAG):
     def __init__(self):
         super().__init__()
 
-    def request_to_openai(self, system: str, request: str, temper: float, verbose=False):
+    def request_to_openai(self, system: str, request: str, temper: float, model="openai/gpt-4o-mini", verbose=False):
         attempts = 1
 
         headers = {
@@ -43,7 +43,7 @@ class RAGProcessor(RAG):
         }
 
         payload = {
-            "model": "openai/gpt-4o-mini",
+            "model": model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": request}
@@ -53,6 +53,8 @@ class RAGProcessor(RAG):
 
         if verbose:
             print("===============================================")
+            print("model: ", model)
+            print("-----------------------------------------------")
             print("system: ", system)
             print("-----------------------------------------------")
             print("user: ", request)
@@ -74,7 +76,6 @@ class RAGProcessor(RAG):
             except Exception as e:
                 print(e)
                 attempts += 1
-                time.sleep(10)
                 if attempts >= 3: return False, f"Ошибка генерации: {e}"
 
 

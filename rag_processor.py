@@ -2,11 +2,8 @@ import json
 from abc import ABC
 import fitz
 import os
-import shutil
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
 from langchain.docstore.document import Document
-# from langchain.docstore import Docstore
-# from typing import Dict, Any
 import tiktoken
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS

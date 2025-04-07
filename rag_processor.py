@@ -131,6 +131,7 @@ class DBConstructor(RAGProcessor):
         with open(file_name, 'w') as fn:
             fn.write(out_text)
 
+#=============================================================================
 # Парсинг документов pdf, docx, xlsx
     def parse_document(self, file_path: str) -> list:
         """Универсальный парсер документов с единой структурой метаданных"""
@@ -144,37 +145,65 @@ class DBConstructor(RAGProcessor):
             raise ValueError("Unsupported file format")
 
     def _parse_docx(self, file_path: str) -> list:
-        """Парсинг DOCX с сохранением порядка элементов"""
+        """
+               Парсинг DOCX с точной нумерацией элементов
+               и двусторонними связями текст-таблица
+               """
         doc = Document(file_path)
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
         chunks = []
-        element_counter = 0
+        element_counter = 0  # Сквозная нумерация всех элементов
 
+        # Первый проход: сбор всех элементов
+        elements = []
         for elem in doc.element.body:
+            if elem.tag.endswith(('p', 'tbl')):
+                elements.append(elem)
+
+        # Второй проход: обработка с учетом контекста
+        for i, elem in enumerate(elements):
             element_counter += 1
             metadata = {
                 "doc_id": doc_id,
                 "doc_type": "docx",
-                "chunk_id": f"{doc_id}_{element_counter}",
+                "chunk_id": f"{doc_id}_elem{element_counter}",
                 "element_type": None,
                 "linked": []
             }
 
-            if elem.tag.endswith('p'):  # Текст
+            if elem.tag.endswith('p'):  # Текстовый блок
                 text = elem.text.strip()
                 if text:
                     metadata["element_type"] = "text"
+
+                    # Поиск связанных таблиц после этого текста
+                    table_ids = []
+                    for next_elem in elements[i + 1:]:
+                        if next_elem.tag.endswith('tbl'):
+                            table_ids.append(f"{doc_id}_elem{element_counter + 1}")
+                            break  # Только первая следующая таблица
+
+                    metadata["linked"] = table_ids
                     chunks.append(Document(
                         page_content=text,
                         metadata=metadata
                     ))
 
             elif elem.tag.endswith('tbl'):  # Таблица
-                table_data = [[cell.text for cell in row.cells] for row in elem.rows]
+                table_data = [
+                    [cell.text for cell in row.cells]
+                    for row in elem.rows
+                ]
                 metadata["element_type"] = "table"
-                if chunks:  # Связь с предыдущим текстом
-                    metadata["linked"].append(chunks[-1].metadata["chunk_id"])
-                    chunks[-1].metadata["linked"].append(metadata["chunk_id"])
+
+                # Поиск связанного текста перед таблицей
+                text_ids = []
+                for prev_elem in reversed(elements[:i]):
+                    if prev_elem.tag.endswith('p'):
+                        text_ids.append(f"{doc_id}_elem{element_counter - 1}")
+                        break  # Только последний предыдущий текст
+
+                metadata["linked"] = text_ids
                 chunks.append(Document(
                     page_content=str(table_data),
                     metadata=metadata

@@ -16,6 +16,8 @@ setup(
     py_modules=['rag_processor'],
     install_requires=[
         "pymupdf>=1.23.0",
+        "pdfminer.six==20221105",
+        "camelot-py==0.10.1",
         "langchain-core>=0.1.0",
         "langchain-community>=0.0.1",
         "langchain-openai>=0.0.1",
@@ -24,6 +26,9 @@ setup(
         "python-dotenv>=1.0.0",
         "requests>=2.26.0",
         "sentence-transformers>=2.2.0",
+        "python-docx>=1.1.2",
+        "pandas>=2.2.3",
+        "openpyxl",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

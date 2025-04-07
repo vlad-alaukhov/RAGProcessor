@@ -1,6 +1,9 @@
 import json
 from abc import ABC
 import fitz
+from camelot import read_pdf
+import hashlib
+import pandas as pd
 import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
 from langchain.docstore.document import Document
@@ -13,7 +16,7 @@ import requests
 from dotenv import load_dotenv
 import time
 from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Generator
 from langchain_core.embeddings import Embeddings
 
 class RAG(ABC):
@@ -127,6 +130,128 @@ class DBConstructor(RAGProcessor):
         os.rename(file_name, file_name.split('.')[0] + '.bak')
         with open(file_name, 'w') as fn:
             fn.write(out_text)
+
+# Парсинг документов pdf, docx, xlsx
+    def parse_document(self, file_path: str) -> list:
+        """Универсальный парсер документов с единой структурой метаданных"""
+        if file_path.endswith('.docx'):
+            return self._parse_docx(file_path)
+        elif file_path.endswith('.pdf'):
+            return self._parse_pdf(file_path)
+        elif file_path.endswith(('.xlsx', '.xls')):
+            return self._parse_excel(file_path)
+        else:
+            raise ValueError("Unsupported file format")
+
+    def _parse_docx(self, file_path: str) -> list:
+        """Парсинг DOCX с сохранением порядка элементов"""
+        doc = Document(file_path)
+        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        chunks = []
+        element_counter = 0
+
+        for elem in doc.element.body:
+            element_counter += 1
+            metadata = {
+                "doc_id": doc_id,
+                "doc_type": "docx",
+                "chunk_id": f"{doc_id}_{element_counter}",
+                "element_type": None,
+                "linked": []
+            }
+
+            if elem.tag.endswith('p'):  # Текст
+                text = elem.text.strip()
+                if text:
+                    metadata["element_type"] = "text"
+                    chunks.append(Document(
+                        page_content=text,
+                        metadata=metadata
+                    ))
+
+            elif elem.tag.endswith('tbl'):  # Таблица
+                table_data = [[cell.text for cell in row.cells] for row in elem.rows]
+                metadata["element_type"] = "table"
+                if chunks:  # Связь с предыдущим текстом
+                    metadata["linked"].append(chunks[-1].metadata["chunk_id"])
+                    chunks[-1].metadata["linked"].append(metadata["chunk_id"])
+                chunks.append(Document(
+                    page_content=str(table_data),
+                    metadata=metadata
+                ))
+
+        return chunks
+
+    def _parse_pdf(self, file_path: str) -> list:
+        """Парсинг PDF с базовым разделением текста и таблиц"""
+        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        chunks = []
+
+        with fitz.open(file_path) as pdf:
+            for page_num, page in enumerate(pdf):
+                # Текст страницы
+                text = page.get_text().strip()
+                if text:
+                    chunks.append(Document(
+                        page_content=text,
+                        metadata={
+                            "doc_id": doc_id,
+                            "doc_type": "pdf",
+                            "chunk_id": f"{doc_id}_p{page_num + 1}_text",
+                            "element_type": "text",
+                            "linked": []
+                        }
+                    ))
+
+                # Таблицы
+                tables = read_pdf(file_path, pages=str(page_num + 1), flavor="stream")
+                for i, table in enumerate(tables):
+                    chunks.append(Document(
+                        page_content=table.df.to_json(),
+                        metadata={
+                            "doc_id": doc_id,
+                            "doc_type": "pdf",
+                            "chunk_id": f"{doc_id}_p{page_num + 1}_table{i + 1}",
+                            "element_type": "table",
+                            "linked": [chunks[-1].metadata["chunk_id"]] if chunks else []
+                        }
+                    ))
+
+        return chunks
+
+    def _parse_excel(self, file_path: str) -> list:
+        """Парсинг Excel с сохранением структуры листов"""
+        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        chunks = []
+
+        dfs = pd.read_excel(file_path, sheet_name=None)
+        for sheet_name, df in dfs.items():
+            # Текстовое представление листа
+            chunks.append(Document(
+                page_content=f"Лист: {sheet_name}\n{df.to_string()}",
+                metadata={
+                    "doc_id": doc_id,
+                    "doc_type": "excel",
+                    "chunk_id": f"{doc_id}_{sheet_name}_text",
+                    "element_type": "text",
+                    "linked": [f"{doc_id}_{sheet_name}_table"]
+                }
+            ))
+
+            # Табличные данные
+            chunks.append(Document(
+                page_content=df.to_json(),
+                metadata={
+                    "doc_id": doc_id,
+                    "doc_type": "excel",
+                    "chunk_id": f"{doc_id}_{sheet_name}_table",
+                    "element_type": "table",
+                    "linked": [f"{doc_id}_{sheet_name}_text"]
+                }
+            ))
+
+        return chunks
+#==========================================================================================
 
     def num_tokens_from_string(self, string: str, encoding_name: str) -> int:
         """Возвращает количество токенов в строке"""

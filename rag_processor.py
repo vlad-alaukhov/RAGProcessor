@@ -4,6 +4,7 @@ import fitz
 from camelot import read_pdf
 import hashlib
 import pandas as pd
+from docx import Document as Docx
 import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
 from langchain.docstore.document import Document
@@ -133,7 +134,7 @@ class DBConstructor(RAGProcessor):
 
 #=============================================================================
 # Парсинг документов pdf, docx, xlsx
-    def parse_document(self, file_path: str) -> list:
+    def document_parser(self, file_path: str) -> list:
         """Универсальный парсер документов с единой структурой метаданных"""
         if file_path.endswith('.docx'):
             return self._parse_docx(file_path)
@@ -149,7 +150,7 @@ class DBConstructor(RAGProcessor):
                Парсинг DOCX с точной нумерацией элементов
                и двусторонними связями текст-таблица
                """
-        doc = Document(file_path)
+        doc = Docx(file_path)
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
         chunks = []
         element_counter = 0  # Сквозная нумерация всех элементов

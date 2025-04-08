@@ -146,23 +146,20 @@ class DBConstructor(RAGProcessor):
             raise ValueError("Unsupported file format")
 
     def _parse_docx(self, file_path: str) -> list:
-        """
-               Парсинг DOCX с точной нумерацией элементов
-               и двусторонними связями текст-таблица
-               """
+        """Парсинг DOCX с сохранением оригинальной структуры метаданных"""
         doc = Docx(file_path)
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
-        chunks = []
-        element_counter = 0  # Сквозная нумерация всех элементов
-
-        # Первый проход: сбор всех элементов
         elements = []
+        chunks = []
+
+        # Собираем все элементы документа как в оригинале
         for elem in doc.element.body:
             if elem.tag.endswith(('p', 'tbl')):
                 elements.append(elem)
 
-        # Второй проход: обработка с учетом контекста
-        for i, elem in enumerate(elements):
+        # Обработка элементов с сохранением оригинальной логики
+        element_counter = 0
+        for elem in elements:
             element_counter += 1
             metadata = {
                 "doc_id": doc_id,
@@ -172,43 +169,45 @@ class DBConstructor(RAGProcessor):
                 "linked": []
             }
 
-            if elem.tag.endswith('p'):  # Текстовый блок
+            if elem.tag.endswith('p'):
+                # Обработка текста (без изменений)
                 text = elem.text.strip()
                 if text:
                     metadata["element_type"] = "text"
-
-                    # Поиск связанных таблиц после этого текста
-                    table_ids = []
-                    for next_elem in elements[i + 1:]:
-                        if next_elem.tag.endswith('tbl'):
-                            table_ids.append(f"{doc_id}_elem{element_counter + 1}")
-                            break  # Только первая следующая таблица
-
-                    metadata["linked"] = table_ids
                     chunks.append(LangDoc(
                         page_content=text,
                         metadata=metadata
                     ))
 
-            elif elem.tag.endswith('tbl'):  # Таблица
-                table_data = [
-                    [cell.text for cell in row.cells]
-                    for row in elem.rows
-                ]
-                metadata["element_type"] = "table"
+            elif elem.tag.endswith('tbl'):
+                # Исправление для таблиц через API python-docx
+                try:
+                    # Получаем объект таблицы через API
+                    table = next(t for t in doc.tables if t._element is elem)
+                    table_data = [
+                        [cell.text.strip() for cell in row.cells]
+                        for row in table.rows
+                    ]
 
-                # Поиск связанного текста перед таблицей
-                text_ids = []
-                for prev_elem in reversed(elements[:i]):
-                    if prev_elem.tag.endswith('p'):
-                        text_ids.append(f"{doc_id}_elem{element_counter - 1}")
-                        break  # Только последний предыдущий текст
+                    metadata["element_type"] = "table"
+                    chunks.append(LangDoc(
+                        page_content=str(table_data),
+                        metadata=metadata
+                    ))
 
-                metadata["linked"] = text_ids
-                chunks.append(LangDoc(
-                    page_content=str(table_data),
-                    metadata=metadata
-                ))
+                except Exception as e:
+                    print(f"Ошибка обработки таблицы: {str(e)}")
+                    continue
+
+        # Восстановление оригинальной логики связей
+        for i, chunk in enumerate(chunks):
+            if chunk.metadata["element_type"] == "text":
+                # Ищем следующую таблицу после текста
+                for next_chunk in chunks[i + 1:]:
+                    if next_chunk.metadata["element_type"] == "table":
+                        chunk.metadata["linked"].append(next_chunk.metadata["chunk_id"])
+                        next_chunk.metadata["linked"].append(chunk.metadata["chunk_id"])
+                        break
 
         return chunks
 

@@ -7,7 +7,7 @@ import pandas as pd
 from docx import Document as Docx
 import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
-from langchain.docstore.document import Document
+from langchain.docstore.document import Document as LangDoc
 import tiktoken
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -185,7 +185,7 @@ class DBConstructor(RAGProcessor):
                             break  # Только первая следующая таблица
 
                     metadata["linked"] = table_ids
-                    chunks.append(Document(
+                    chunks.append(LangDoc(
                         page_content=text,
                         metadata=metadata
                     ))
@@ -205,7 +205,7 @@ class DBConstructor(RAGProcessor):
                         break  # Только последний предыдущий текст
 
                 metadata["linked"] = text_ids
-                chunks.append(Document(
+                chunks.append(LangDoc(
                     page_content=str(table_data),
                     metadata=metadata
                 ))
@@ -222,7 +222,7 @@ class DBConstructor(RAGProcessor):
                 # Текст страницы
                 text = page.get_text().strip()
                 if text:
-                    chunks.append(Document(
+                    chunks.append(LangDoc(
                         page_content=text,
                         metadata={
                             "doc_id": doc_id,
@@ -236,7 +236,7 @@ class DBConstructor(RAGProcessor):
                 # Таблицы
                 tables = read_pdf(file_path, pages=str(page_num + 1), flavor="stream")
                 for i, table in enumerate(tables):
-                    chunks.append(Document(
+                    chunks.append(LangDoc(
                         page_content=table.df.to_json(),
                         metadata={
                             "doc_id": doc_id,
@@ -257,7 +257,7 @@ class DBConstructor(RAGProcessor):
         dfs = pd.read_excel(file_path, sheet_name=None)
         for sheet_name, df in dfs.items():
             # Текстовое представление листа
-            chunks.append(Document(
+            chunks.append(LangDoc(
                 page_content=f"Лист: {sheet_name}\n{df.to_string()}",
                 metadata={
                     "doc_id": doc_id,
@@ -269,7 +269,7 @@ class DBConstructor(RAGProcessor):
             ))
 
             # Табличные данные
-            chunks.append(Document(
+            chunks.append(LangDoc(
                 page_content=df.to_json(),
                 metadata={
                     "doc_id": doc_id,
@@ -325,7 +325,7 @@ class DBConstructor(RAGProcessor):
                 if len(each_element) > 1:
                     for key in each_document.metadata:
                         header += f"{each_document.metadata[key]}. "
-                source_chunks.append(Document(page_content=header+each_element, metadata=each_document.metadata))
+                source_chunks.append(LangDoc(page_content=header+each_element, metadata=each_document.metadata))
         if verbose: print(f"Чанков всего: {len(source_chunks)}")
 
         return source_chunks
@@ -728,7 +728,7 @@ class Tester(DBConstructor):
         with open(quest_file, 'r') as qf:
             pull_questions = qf.read()
         # Делаю из пула вопросов langchain документ, чтобы подать в request_openai
-        pull_questions = Document(page_content=pull_questions, metadata={'pull': 'questions'})
+        pull_questions = LangDoc(page_content=pull_questions, metadata={'pull': 'questions'})
         # Получаю сводку
         request = f"{user}\n{pull_questions}"
         self.summary = self.request_to_openai(system, request, 0)

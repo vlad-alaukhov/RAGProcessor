@@ -39,24 +39,23 @@
 
 3. **Установка в режиме разработки**
    Для CPU:
-   `pip install -e ~/RAGProcessor`
-   `pip install -e . --index-url https://download.pytorch.org/whl/cpu  --extra-index-url https://pypi.org/simple`
+   `pip install -e . --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple`
 
    Для GPU:
    `pip install -e ~/RAGProcessor[gpu] --extra-index-url https://download.pytorch.org/whl/cu118 --extra-index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com`
-
-4. **Очистка кэша**
-   `pip cache purge`
-
-5. **Для виртуальных окружений**
-   Активируйте окружение и повторите шаги 1-4:
-   `source .venv/bin/activate`
 
 **Примечания:**
 - Режим `-e` создает симлинки, позволяя редактировать код без переустановки.
 - Для GPU убедитесь, что CUDA 11.8 установлена и выбрана среда выполнения T4 в Colab.
 - При конфликтах: `rm -rf .venv && python -m venv .venv`.
 - Фиксированные версии в `setup.py` гарантируют совместимость.
+
+## Как установить пакет с диска в Ваш новый проект
+
+**Для CPU**
+
+`pip install -e ~/Projects/RAGProcessor --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple`
+
 
 ## Как установить пакет для CPU локально из requirements.txt
 

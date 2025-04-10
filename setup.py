@@ -34,8 +34,9 @@ setup(
     ],
     extras_require={
         "gpu": [
-        "torch>=2.0.0",
-        "nvidia-cublas-cu12>=12.4.5.8",
+        "torch==2.0.0+cu118",  # Явная версия с CUDA
+        "nvidia-cublas-cu12==12.4.5.8",
+        "nvidia-cuda-runtime-cu12==12.4.127"
         ]},
     classifiers=[
         "Programming Language :: Python :: 3",

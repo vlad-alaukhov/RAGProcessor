@@ -18,7 +18,7 @@
 
 4. **Для виртуальных окружений**
    Удалите папку окружения и создайте новое:
-   `rm -rf .venv && python -m venv .venv && source .venv/bin/activate`
+   `rm -rf .venv && python3 -m venv .venv && source .venv/bin/activate`
 
 **Примечания:**
 
@@ -35,11 +35,12 @@
    `rm -rf ~/RAGProcessor/build ~/RAGProcessor/dist ~/RAGProcessor/*.egg-info`
 
 2. **Очистка зависимостей (опционально)**
-   `pip uninstall -y torch sentence-transformers faiss-gpu langchain-core langchain-community langchain-openai pymupdf pdfminer.six camelot-py python-docx pandas opencv-python-headless tiktoken python-dotenv requests openpyxl numpy`
+   `pip uninstall -y torch sentence-transformers faiss-gpu faiss-cpu langchain-core langchain-community langchain-openai pymupdf pdfminer.six camelot-py python-docx pandas opencv-python-headless tiktoken python-dotenv requests openpyxl numpy`
 
 3. **Установка в режиме разработки**
    Для CPU:
    `pip install -e ~/RAGProcessor`
+   `pip install -e . --index-url https://download.pytorch.org/whl/cpu  --extra-index-url https://pypi.org/simple`
 
    Для GPU:
    `pip install -e ~/RAGProcessor[gpu] --extra-index-url https://download.pytorch.org/whl/cu118`

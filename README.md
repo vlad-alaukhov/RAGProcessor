@@ -43,7 +43,7 @@
    `pip install -e . --index-url https://download.pytorch.org/whl/cpu  --extra-index-url https://pypi.org/simple`
 
    Для GPU:
-   `pip install -e ~/RAGProcessor[gpu] --extra-index-url https://download.pytorch.org/whl/cu118`
+   `pip install -e ~/RAGProcessor[gpu] --extra-index-url https://download.pytorch.org/whl/cu118 --extra-index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com`
 
 4. **Очистка кэша**
    `pip cache purge`

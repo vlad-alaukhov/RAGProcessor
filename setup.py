@@ -15,15 +15,15 @@ setup(
     packages=find_packages(),
     py_modules=['rag_processor'],
     install_requires=[
-        "torch==2.6.0+cpu",  # Версия для CPU (без CUDA)
+        "torch>=2.0.0+cpu",  # Версия для CPU (без CUDA)
         "pymupdf>=1.23.0",
         "pdfminer.six==20221105",
         "camelot-py==0.10.1",
         "opencv-python-headless==4.11.0.86",
         "python-docx>=1.1.2",
         "pandas>=2.2.3",
-        "langchain-core>=0.3.15",
-        "langchain-community>=0.3.1",
+        "langchain-core>=0.1.0",
+        "langchain-community>=0.0.1",
         "langchain-openai>=0.0.1",
         "tiktoken>=0.5.0",
         "faiss-cpu>=1.7.0",
@@ -34,7 +34,7 @@ setup(
     ],
     extras_require={
         "gpu": [
-        "torch==2.0.0+cu118",  # Явная версия с CUDA
+        "torch>=2.0.0+cu118",  # Явная версия с CUDA
         "nvidia-cublas-cu12==12.4.5.8",
         "nvidia-cuda-runtime-cu12==12.4.127"
         ]},

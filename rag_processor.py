@@ -16,7 +16,7 @@ import re                 # работа с регулярными выраже�
 import requests
 from dotenv import load_dotenv
 import time
-from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_huggingface import HuggingFaceEmbeddings
 from typing import List, Any, Dict, Generator
 from langchain_core.embeddings import Embeddings
 

@@ -655,7 +655,7 @@ class DBConstructor(RAGProcessor):
         try:
             if not hybrid_mode:
                 # Старый режим (для обратной совместимости)
-                load_result = self._load_single_db(db_folder)
+                load_result = self._single_faiss_loader(db_folder)
                 if not load_result["success"]:
                     raise ValueError(load_result["error"])
                 result["db"] = load_result["db"]

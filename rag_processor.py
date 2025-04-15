@@ -1,4 +1,5 @@
 import json
+import shutil
 from abc import ABC
 import fitz
 from camelot import read_pdf
@@ -148,39 +149,51 @@ class DBConstructor(RAGProcessor):
     def _parse_docx(self, file_path: str) -> list:
         """Парсинг DOCX с сохранением оригинальной структуры метаданных"""
         doc = Docx(file_path)
+        # Готовлю ид документа. Хэширую путь файла
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
-        elements = []
         chunks = []
+        prev_table_id = None  # Для связывания частей таблиц
+        prev_parag_id = None  # Для связей между абзацами
 
-        # Собираем все элементы документа как в оригинале
-        for elem in doc.element.body:
-            if elem.tag.endswith(('p', 'tbl')):
-                elements.append(elem)
+        # Собираем в список элементы документа вообще все
+        elements = [elem for elem in doc.element.body if elem.tag.endswith(('p', 'tbl'))]
 
         # Обработка элементов с сохранением оригинальной логики
-        element_counter = 0
-        for elem in elements:
-            element_counter += 1
+        # По каждому элементу абзац и таблица заполняю метаданные: сначала ид документа и ид чанка.
+        for i, elem in enumerate(elements):
             metadata = {
                 "doc_id": doc_id,
                 "doc_type": "docx",
-                "chunk_id": f"{doc_id}_elem{element_counter}",
+                "chunk_id": f"{doc_id}_{i}",
                 "element_type": None,
                 "linked": []
             }
 
+            # Здесь, в том же цикле, деление на таблицы и абзацы.
+            # Если элемент - абзац, то:
             if elem.tag.endswith('p'):
-                # Обработка текста (без изменений)
+                # Вытаскиваем текст
                 text = elem.text.strip()
-                if text:
-                    metadata["element_type"] = "text"
-                    chunks.append(LangDoc(
-                        page_content=text,
-                        metadata=metadata
-                    ))
+                # Пустой абзац = конец блока
+                if not text:
+                    prev_parag_id = None
+                    continue
+
+                metadata["element_type"] = "text"
+
+                # Связь с предыдущим абзацем (если он есть и не прерван пустой строкой)
+                if prev_parag_id:
+                    metadata["linked"].append(prev_parag_id)
+                    prev_chunk = next(c for c in chunks if c.metadata["chunk_id"] == prev_parag_id)
+                    prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+
+                chunks.append(LangDoc(page_content=text, metadata=metadata))
+                prev_parag_id = metadata["chunk_id"]
+                prev_table_id = None
 
             elif elem.tag.endswith('tbl'):
                 # Исправление для таблиц через API python-docx
+                print("Таблица")
                 try:
                     # Получаем объект таблицы через API
                     table = next(t for t in doc.tables if t._element is elem)
@@ -188,26 +201,28 @@ class DBConstructor(RAGProcessor):
                         [cell.text.strip() for cell in row.cells]
                         for row in table.rows
                     ]
-
                     metadata["element_type"] = "table"
-                    chunks.append(LangDoc(
-                        page_content=str(table_data),
-                        metadata=metadata
-                    ))
+                    # Связь с предыдущей частью таблицы
+                    if prev_table_id:
+                        metadata["linked"].append(prev_table_id)
+                        # Обновляем предыдущую часть
+                        prev_chunk = next(c for c in chunks if c.metadata["chunk_id"] == prev_table_id)
+                        prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+
+                    # Связь с последним абзацем перед таблицей (если есть)
+                    if prev_parag_id:
+                        metadata["linked"].append(prev_parag_id)
+                        prev_chunk = next(c for c in chunks if c.metadata["chunk_id"] == prev_parag_id)
+                        prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+
+                    chunks.append(LangDoc(page_content=str(table_data), metadata=metadata))
+
+                    prev_table_id = metadata["chunk_id"]
 
                 except Exception as e:
                     print(f"Ошибка обработки таблицы: {str(e)}")
+                    prev_table_id = None
                     continue
-
-        # Восстановление оригинальной логики связей
-        for i, chunk in enumerate(chunks):
-            if chunk.metadata["element_type"] == "text":
-                # Ищем следующую таблицу после текста
-                for next_chunk in chunks[i + 1:]:
-                    if next_chunk.metadata["element_type"] == "table":
-                        chunk.metadata["linked"].append(next_chunk.metadata["chunk_id"])
-                        next_chunk.metadata["linked"].append(chunk.metadata["chunk_id"])
-                        break
 
         return chunks
 
@@ -280,6 +295,50 @@ class DBConstructor(RAGProcessor):
             ))
 
         return chunks
+
+    @staticmethod
+    def validate_chunks(chunks: list) -> bool:
+        for chunk in chunks:
+            for linked_id in chunk.metadata["linked"]:
+                if not any(c.metadata["chunk_id"] == linked_id for c in chunks):
+                    raise ValueError(f"Битая связь: {chunk.metadata['chunk_id']} → {linked_id}")
+        return True
+
+# Подготовка к векторизации сложных документов
+
+    @staticmethod
+    def validate_link(chunk: LangDoc, chunks: List[LangDoc]):
+        for linked_id in chunk.metadata["linked"]:
+            if not any(ch.metadata["chunk_id"] == linked_id for ch in chunks):
+                return None
+            else:
+                return chunk.metadata["linked"]
+
+    def prepare_chunks(self, chunks: List[LangDoc]) -> List[LangDoc]:
+        """Подготавливает чанки к векторизации, сохраняя связи текст-таблица"""
+        prepared = []
+
+        for chunk in chunks:
+            # Нормализация таблиц в читаемый вид
+            if chunk.metadata["element_type"] == "table":
+                try:
+                    table_data = eval(chunk.page_content)
+                    chunk.page_content = "ТАБЛИЦА:\n" + "\n".join([" | ".join(map(str, row)) for row in table_data])
+                except:
+                    pass
+
+            # Добавляем ссылки в текст для поиска
+
+            links = "\n[Текущий: " + chunk.metadata["chunk_id"] + " Связан c " + ", ".join(chunk.metadata["linked"]) + "]"
+            chunk.page_content += links
+            # if chunk.metadata["linked"]:
+            #     links = "\n[Текущий: " + chunk.metadata["chunk_id"] + " Связан c " + ", ".join(chunk.metadata["linked"]) + "]"
+            #     chunk.page_content += links
+
+            prepared.append(chunk)
+
+        return prepared
+
 #==========================================================================================
 
     def num_tokens_from_string(self, string: str, encoding_name: str) -> int:
@@ -428,6 +487,8 @@ class DBConstructor(RAGProcessor):
             else: break
 
         return code, result_text
+    # ============================================================================
+    # Всё, что касается векторизации
 
     def vectorizator(self, docs: list, db_folder: str, **kwargs):
         """Универсальный метод векторизации с автонастройкой для E5"""
@@ -523,7 +584,102 @@ class DBConstructor(RAGProcessor):
             print(f"Ошибка определения размерности: {str(e)}")
         return "unknown"
 
-    def faiss_loader(self, db_folder: str) -> Dict[str, Any]:
+    def hybrid_vectorizator(
+            self,
+            docs: List[LangDoc],
+            db_folder: str,
+            text_model: str = "cointegrated/LaBSE-ru-turbo",
+            table_model: str = "deepset/all-mpnet-base-v2-table",
+            **kwargs
+    ) -> tuple:
+        """Векторизация с разделением текста и таблиц. Не изменяет старый vectorizator."""
+        try:
+            # Разделяем чанки
+            text_chunks = [d for d in docs if d.metadata.get("element_type") != "table"]
+            table_chunks = [d for d in docs if d.metadata.get("element_type") == "table"]
+
+            # Создаем подпапки для текстов и таблиц
+            text_db_path = os.path.join(db_folder, "text_db")
+            table_db_path = os.path.join(db_folder, "table_db")
+            os.makedirs(text_db_path, exist_ok=True)
+            os.makedirs(table_db_path, exist_ok=True)
+
+            # Векторизация текстов (используем СТАРЫЙ vectorizator)
+            if text_chunks:
+                success, msg = self.vectorizator(
+                    docs=text_chunks,
+                    db_folder=text_db_path,
+                    model_name=text_model,
+                    model_type="huggingface",
+                    **kwargs
+                )
+                if not success:
+                    return False, f"Ошибка текстовой базы: {msg}"
+
+            # Векторизация таблиц (используем СТАРЫЙ vectorizator)
+            if table_chunks:
+                success, msg = self.vectorizator(
+                    docs=table_chunks,
+                    db_folder=table_db_path,
+                    model_name=table_model,
+                    model_type="huggingface",
+                    **kwargs
+                )
+                if not success:
+                    return False, f"Ошибка табличной базы: {msg}"
+
+            # Копируем метаданные из text_db в корень для совместимости
+            if os.path.exists(os.path.join(text_db_path, "metadata.json")):
+                shutil.copy(
+                    os.path.join(text_db_path, "metadata.json"),
+                    os.path.join(db_folder, "metadata.json")
+                )
+
+            return True, f"Гибридные базы сохранены в {db_folder}"
+        except Exception as e:
+            return False, f"Критическая ошибка: {str(e)}"
+
+    #=======================================================================
+    # Загрузка базы
+
+    def faiss_loader(self, db_folder: str, hybrid_mode: bool = False) -> Dict[str, Any]:
+        """Загрузка базы с поддержкой гибридного режима."""
+        result = {
+            "success": False,
+            "db": None,
+            "text_db": None,  # Только для hybrid_mode
+            "table_db": None,  # Только для hybrid_mode
+            "error": ""
+        }
+
+        try:
+            if not hybrid_mode:
+                # Старый режим (для обратной совместимости)
+                load_result = self._load_single_db(db_folder)
+                if not load_result["success"]:
+                    raise ValueError(load_result["error"])
+                result["db"] = load_result["db"]
+            else:
+                # Гибридный режим
+                text_db_result = self._single_faiss_loader(os.path.join(db_folder, "text_db"))
+                table_db_result = self._single_faiss_loader(os.path.join(db_folder, "table_db"))
+
+                if not text_db_result["success"]:
+                    raise ValueError(f"Текстовая база: {text_db_result['error']}")
+                if not table_db_result["success"]:
+                    raise ValueError(f"Табличная база: {table_db_result['error']}")
+
+                result["text_db"] = text_db_result["db"]
+                result["table_db"] = table_db_result["db"]
+
+            result["success"] = True
+            return result
+
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
+    def _single_faiss_loader(self, db_folder: str) -> Dict[str, Any]:
         """
         Возвращает словарь с ключами:
         - success: bool - флаг успеха операции

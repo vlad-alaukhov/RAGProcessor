@@ -147,84 +147,58 @@ class DBConstructor(RAGProcessor):
             raise ValueError("Unsupported file format")
 
     def _parse_docx(self, file_path: str) -> list:
-        """Парсинг DOCX с сохранением оригинальной структуры метаданных"""
+
         doc = Docx(file_path)
         # Готовлю ид документа. Хэширую путь файла
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
         chunks = []
-        prev_table_id = None  # Для связывания частей таблиц
-        prev_parag_id = None  # Для связей между абзацами
 
         # Собираем в список элементы документа вообще все
         elements = [elem for elem in doc.element.body if elem.tag.endswith(('p', 'tbl'))]
 
-        # Обработка элементов с сохранением оригинальной логики
-        # По каждому элементу абзац и таблица заполняю метаданные: сначала ид документа и ид чанка.
-        for i, elem in enumerate(elements):
-            metadata = {
-                "doc_id": doc_id,
-                "doc_type": "docx",
-                "chunk_id": f"{doc_id}_{i}",
-                "element_type": None,
-                "linked": []
-            }
+        groups = []
+        current_group = ""
 
-            # Здесь, в том же цикле, деление на таблицы и абзацы.
-            # Если элемент - абзац, то:
+        for i, elem in enumerate(elements):
+
             if elem.tag.endswith('p'):
-                # Вытаскиваем текст
                 text = elem.text.strip()
-                # Пустой абзац = конец блока
+
+                # Пустой абзац = разделитель группы
                 if not text:
-                    prev_parag_id = None
+                    print(f"Пробел {i}")
+                    if current_group:
+                        groups.append(current_group)
+                        current_group = ""
                     continue
 
-                metadata["element_type"] = "text"
+                print(f"Текст {i}")
 
-                # Связь с предыдущим абзацем (если он есть и не прерван пустой строкой)
-                if prev_parag_id:
-                    metadata["linked"].append(prev_parag_id)
-                    prev_chunk = next(c for c in chunks if c.metadata["chunk_id"] == prev_parag_id)
-                    prev_chunk.metadata["linked"].append(metadata["chunk_id"])
-
-                chunks.append(LangDoc(page_content=text, metadata=metadata))
-                prev_parag_id = metadata["chunk_id"]
-                prev_table_id = None
+                current_group += elem.text.strip() + '\n'  # Добавляем НЕпустой абзац
 
             elif elem.tag.endswith('tbl'):
-                # Исправление для таблиц через API python-docx
-                print("Таблица")
+                # Прерываем текст перед таблицей
+                if current_group:
+                    groups.append(current_group.strip())
+                    current_group = ""
+
+                print(f"Таблица {i}")
                 try:
                     # Получаем объект таблицы через API
                     table = next(t for t in doc.tables if t._element is elem)
-                    table_data = [
-                        [cell.text.strip() for cell in row.cells]
-                        for row in table.rows
-                    ]
-                    metadata["element_type"] = "table"
-                    # Связь с предыдущей частью таблицы
-                    if prev_table_id:
-                        metadata["linked"].append(prev_table_id)
-                        # Обновляем предыдущую часть
-                        prev_chunk = next(c for c in chunks if c.metadata["chunk_id"] == prev_table_id)
-                        prev_chunk.metadata["linked"].append(metadata["chunk_id"])
-
-                    # Связь с последним абзацем перед таблицей (если есть)
-                    if prev_parag_id:
-                        metadata["linked"].append(prev_parag_id)
-                        prev_chunk = next(c for c in chunks if c.metadata["chunk_id"] == prev_parag_id)
-                        prev_chunk.metadata["linked"].append(metadata["chunk_id"])
-
-                    chunks.append(LangDoc(page_content=str(table_data), metadata=metadata))
-
-                    prev_table_id = metadata["chunk_id"]
-
+                    table_data = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+                    groups.append(table_data)
                 except Exception as e:
                     print(f"Ошибка обработки таблицы: {str(e)}")
                     prev_table_id = None
                     continue
 
-        return chunks
+            # Добавляем последнюю группу (если не была добавлена)
+        if current_group:
+            groups.append(current_group)
+
+        for each in groups: print(each)
+        return groups
 
     def _parse_pdf(self, file_path: str) -> list:
         """Парсинг PDF с базовым разделением текста и таблиц"""
@@ -296,6 +270,7 @@ class DBConstructor(RAGProcessor):
 
         return chunks
 
+# ========================================================
     @staticmethod
     def validate_chunks(chunks: list) -> bool:
         for chunk in chunks:
@@ -314,30 +289,80 @@ class DBConstructor(RAGProcessor):
             else:
                 return chunk.metadata["linked"]
 
-    def prepare_chunks(self, chunks: List[LangDoc]) -> List[LangDoc]:
-        """Подготавливает чанки к векторизации, сохраняя связи текст-таблица"""
-        prepared = []
+    def prepare_chunks(self, dry_chunks: list) -> List[LangDoc]:
+        processed_chunks = []
+        doc_id = None
+        prev_text_chunk_id = None
+        prev_table_id = None
+        prev_was_table = False  # Флаг для отслеживания последовательных таблиц
+        global_counter = 0
 
-        for chunk in chunks:
-            # Нормализация таблиц в читаемый вид
-            if chunk.metadata["element_type"] == "table":
-                try:
-                    table_data = eval(chunk.page_content)
-                    chunk.page_content = "ТАБЛИЦА:\n" + "\n".join([" | ".join(map(str, row)) for row in table_data])
-                except:
-                    pass
+        for idx, chunk in enumerate(dry_chunks):
+            is_table = isinstance(chunk, list) and all(isinstance(row, list) for row in chunk)
 
-            # Добавляем ссылки в текст для поиска
+            # Инициализация doc_id
+            if doc_id is None and not is_table:
+                doc_id = hashlib.md5(str(chunk).encode()).hexdigest()[:8]
 
-            links = "\n[Текущий: " + chunk.metadata["chunk_id"] + " Связан c " + ", ".join(chunk.metadata["linked"]) + "]"
-            chunk.page_content += links
-            # if chunk.metadata["linked"]:
-            #     links = "\n[Текущий: " + chunk.metadata["chunk_id"] + " Связан c " + ", ".join(chunk.metadata["linked"]) + "]"
-            #     chunk.page_content += links
+            # Обработка текста
+            if not is_table:
+                if len(chunk) > 800:
+                    split_texts = self.split_text_recursive(chunk, 800)
+                else:
+                    split_texts = [chunk]
 
-            prepared.append(chunk)
+                prev_sub_id = None
+                for i, text in enumerate(split_texts):
+                    global_counter += 1
+                    metadata = {
+                        "doc_id": doc_id,
+                        "doc_type": "docx",
+                        "chunk_id": f"{doc_id}_{global_counter}",
+                        "element_type": "text",
+                        "linked": []
+                    }
 
-        return prepared
+                    # Связь внутри подчанков
+                    if prev_sub_id:
+                        metadata["linked"].append(prev_sub_id)
+                        prev_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_sub_id)
+                        prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+
+                    processed_chunks.append(LangDoc(page_content=text, metadata=metadata))
+                    prev_sub_id = metadata["chunk_id"]
+                    prev_text_chunk_id = metadata["chunk_id"]
+
+                prev_was_table = False  # Сброс флага после текста
+
+            # Обработка таблицы
+            else:
+                global_counter += 1
+                metadata = {
+                    "doc_id": doc_id,
+                    "doc_type": "docx",
+                    "chunk_id": f"{doc_id}_{global_counter}",
+                    "element_type": "table",
+                    "linked": []
+                }
+
+                # Связь с предыдущим текстовым чанком
+                if prev_text_chunk_id:
+                    metadata["linked"].append(prev_text_chunk_id)
+                    prev_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_text_chunk_id)
+                    prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+
+                # Связь с предыдущей таблицей ТОЛЬКО если они идут подряд
+                if prev_was_table and prev_table_id:
+                    metadata["linked"].append(prev_table_id)
+                    prev_table_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_table_id)
+                    prev_table_chunk.metadata["linked"].append(metadata["chunk_id"])
+
+                processed_chunks.append(LangDoc(page_content=str(chunk), metadata=metadata))
+                prev_text_chunk_id = None
+                prev_table_id = metadata["chunk_id"]
+                prev_was_table = True  # Устанавливаем флаг
+
+        return processed_chunks
 
 #==========================================================================================
 
@@ -655,7 +680,7 @@ class DBConstructor(RAGProcessor):
         try:
             if not hybrid_mode:
                 # Старый режим (для обратной совместимости)
-                load_result = self._single_faiss_loader(db_folder)
+                load_result = self._load_single_db(db_folder)
                 if not load_result["success"]:
                     raise ValueError(load_result["error"])
                 result["db"] = load_result["db"]

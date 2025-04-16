@@ -10,7 +10,8 @@ import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter     # рекурсивное разделение текста
 from langchain.docstore.document import Document as LangDoc
 import tiktoken
-from langchain_community.embeddings import HuggingFaceEmbeddings
+# from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 import re                 # работа с регулярными выражениями
@@ -146,13 +147,9 @@ class DBConstructor(RAGProcessor):
         else:
             raise ValueError("Unsupported file format")
 
-    def _parse_docx(self, file_path: str) -> list:
+    def _parse_docx(self, file_path: str, verbose = False) -> list:
 
         doc = Docx(file_path)
-        # Готовлю ид документа. Хэширую путь файла
-        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
-        chunks = []
-
         # Собираем в список элементы документа вообще все
         elements = [elem for elem in doc.element.body if elem.tag.endswith(('p', 'tbl'))]
 
@@ -166,13 +163,10 @@ class DBConstructor(RAGProcessor):
 
                 # Пустой абзац = разделитель группы
                 if not text:
-                    print(f"Пробел {i}")
                     if current_group:
                         groups.append(current_group)
                         current_group = ""
                     continue
-
-                print(f"Текст {i}")
 
                 current_group += elem.text.strip() + '\n'  # Добавляем НЕпустой абзац
 
@@ -182,7 +176,6 @@ class DBConstructor(RAGProcessor):
                     groups.append(current_group.strip())
                     current_group = ""
 
-                print(f"Таблица {i}")
                 try:
                     # Получаем объект таблицы через API
                     table = next(t for t in doc.tables if t._element is elem)
@@ -197,7 +190,7 @@ class DBConstructor(RAGProcessor):
         if current_group:
             groups.append(current_group)
 
-        for each in groups: print(each)
+        if verbose: print(each for each in groups)
         return groups
 
     def _parse_pdf(self, file_path: str) -> list:
@@ -272,12 +265,13 @@ class DBConstructor(RAGProcessor):
 
 # ========================================================
     @staticmethod
-    def validate_chunks(chunks: list) -> bool:
+    def validate_chunks(chunks: list) -> list:
+        crashed = []
         for chunk in chunks:
             for linked_id in chunk.metadata["linked"]:
                 if not any(c.metadata["chunk_id"] == linked_id for c in chunks):
-                    raise ValueError(f"Битая связь: {chunk.metadata['chunk_id']} → {linked_id}")
-        return True
+                    crashed.append(f"Битая связь: {chunk.metadata['chunk_id']} → {linked_id}")
+        return crashed
 
 # Подготовка к векторизации сложных документов
 
@@ -613,7 +607,7 @@ class DBConstructor(RAGProcessor):
             self,
             docs: List[LangDoc],
             db_folder: str,
-            text_model: str = "cointegrated/LaBSE-ru-turbo",
+            text_model: str = "sergeyzh/LaBSE-ru-turbo",
             table_model: str = "deepset/all-mpnet-base-v2-table",
             **kwargs
     ) -> tuple:
@@ -680,7 +674,7 @@ class DBConstructor(RAGProcessor):
         try:
             if not hybrid_mode:
                 # Старый режим (для обратной совместимости)
-                load_result = self._load_single_db(db_folder)
+                load_result = self._single_faiss_loader(db_folder)
                 if not load_result["success"]:
                     raise ValueError(load_result["error"])
                 result["db"] = load_result["db"]

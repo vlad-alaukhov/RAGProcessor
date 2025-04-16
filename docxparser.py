@@ -1,14 +1,30 @@
+import os
+
 from rag_processor import *
 import textwrap
 
 constructor = DBConstructor()
 
-file_path = """/home/home/Projects/Uraltest/15 файлов для тестирования ПО СМК/Для GPT (копия).docx"""
 
-parsed_chunks = constructor.document_parser(file_path)
+folder = "/home/home/Projects/Uraltest/SMK/_РАБОЧИЕ ПОРЯДКИ ОБЩИЕ"
+filenames = os.listdir(folder)
+for name in filenames:
+    file_path = os.path.join(folder, name)
+    out_path = f"{os.getcwd()}/FAISS/{name.split('.')[-2]}"
+    chunk_file = f"{os.getcwd()}/Chunks/{name.split('.')[-2]}.txt"
 
-prepared_chunks = constructor.prepare_chunks(parsed_chunks)
+    print(f"Документ: {file_path}")
+    print(f"База: {out_path}")
+    print(f"Чанки: {chunk_file}")
+    print()
 
-with open("Для_GPT_(копия).txt", "w") as file:
-    for chunk in prepared_chunks:
-        print(f"{chunk}\n------------------------------", file=file)
+    parsed_chunks = constructor.document_parser(file_path)
+    prepared_chunks = constructor.prepare_chunks(parsed_chunks)
+
+    with open(chunk_file, "w") as file:
+        for chunk in prepared_chunks:
+            print(f"{chunk}\nНарушены связи: {constructor.validate_chunks(prepared_chunks)}"
+                  f"\n------------------------------", file=file)
+
+    success, msg = constructor.hybrid_vectorizator(docs=prepared_chunks, db_folder=out_path)
+    print(success, msg)

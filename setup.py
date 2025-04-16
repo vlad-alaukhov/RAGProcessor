@@ -16,22 +16,23 @@ setup(
     py_modules=['rag_processor'],
     setup_requires=["wheel", "setuptools"],
     install_requires=[
-        "torch==2.6.0",  # Версия для CPU (без CUDA)
-        "pymupdf>=1.23.0",
+        "torch==2.6.0+cpu",  # Версия для CPU (без CUDA)
+        "pymupdf==1.25.5",
         "pdfminer.six==20221105",
         "camelot-py==0.10.1",
         "opencv-python-headless==4.11.0.86",
-        "python-docx>=1.1.2",
-        "pandas>=2.2.3",
-        "langchain-core>=0.1.0",
-        "langchain-community>=0.0.1",
-        "langchain-openai>=0.0.1",
-        "tiktoken>=0.5.0",
-        "faiss-cpu>=1.7.0",
-        "python-dotenv>=1.0.0",
-        "requests>=2.31.0",
-        "sentence-transformers>=2.2.0",
-        "openpyxl==3.1.5"
+        "python-docx==1.1.2",
+        "pandas==2.2.3",
+        "langchain-core==0.3.51",
+        "langchain-community==0.3.21",
+        "langchain-openai==0.3.12",
+        "langchain-huggingface==0.1.2",
+        "tiktoken==0.9.0",
+        "faiss-cpu==1.10.0",
+        "python-dotenv==1.1.0",
+        "requests==2.32.3",
+        "sentence-transformers==4.0.2",
+        "openpyxl==3.1.5",
     ],
     extras_require={
         "gpu": [

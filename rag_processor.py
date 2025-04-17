@@ -873,6 +873,12 @@ class DBConstructor(RAGProcessor):
         with open(os.path.join(output_folder, "metadata.json"), "w") as f:
             json.dump(merged_meta, f, indent=2)
 
+# ==================================================================================================
+# Поиск
+
+
+
+
 #===================================================================================================
 class Tester(DBConstructor):
     def __init__(self):

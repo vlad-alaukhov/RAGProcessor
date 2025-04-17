@@ -5,7 +5,6 @@ import textwrap
 
 constructor = DBConstructor()
 
-
 folder = "/home/home/Projects/Uraltest/SMK/_РАБОЧИЕ ПОРЯДКИ ОБЩИЕ"
 filenames = os.listdir(folder)
 for name in filenames:

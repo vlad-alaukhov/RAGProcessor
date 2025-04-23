@@ -19,7 +19,7 @@ import requests
 from dotenv import load_dotenv
 import time
 # from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Any, Dict, Generator
+from typing import List, Any, Dict, Generator, Optional
 from langchain_core.embeddings import Embeddings
 
 class RAG(ABC):
@@ -282,8 +282,9 @@ class DBConstructor(RAGProcessor):
                 return None
             else:
                 return chunk.metadata["linked"]
+        return None
 
-    def prepare_chunks(self, dry_chunks: list) -> List[LangDoc]:
+    def prepare_chunks(self, dry_chunks: list, file_path: str) -> List[LangDoc]:
         processed_chunks = []
         doc_id = None
         prev_text_chunk_id = None
@@ -291,12 +292,14 @@ class DBConstructor(RAGProcessor):
         prev_was_table = False  # Флаг для отслеживания последовательных таблиц
         global_counter = 0
 
+        # Извлекаем имя файла без расширения
+        file_name = os.path.splitext(os.path.basename(file_path))[0]
+
+        # Генерируем doc_id на основе хеша
+        doc_id = hashlib.md5(file_name.encode()).hexdigest()[:8]
+
         for idx, chunk in enumerate(dry_chunks):
             is_table = isinstance(chunk, list) and all(isinstance(row, list) for row in chunk)
-
-            # Инициализация doc_id
-            if doc_id is None and not is_table:
-                doc_id = hashlib.md5(str(chunk).encode()).hexdigest()[:8]
 
             # Обработка текста
             if not is_table:
@@ -313,7 +316,8 @@ class DBConstructor(RAGProcessor):
                         "doc_type": "docx",
                         "chunk_id": f"{doc_id}_{global_counter}",
                         "element_type": "text",
-                        "linked": []
+                        "linked": [],
+                        "_title": file_name
                     }
 
                     # Связь внутри подчанков
@@ -336,7 +340,8 @@ class DBConstructor(RAGProcessor):
                     "doc_type": "docx",
                     "chunk_id": f"{doc_id}_{global_counter}",
                     "element_type": "table",
-                    "linked": []
+                    "linked": [],
+                    "_title": file_name
                 }
 
                 # Связь с предыдущим текстовым чанком
@@ -746,6 +751,10 @@ class DBConstructor(RAGProcessor):
             result["error"] = f"{type(e).__name__}: {str(e)}"
             return result
 
+
+#============================================================
+# Объединение баз
+
     def merge_databases(self, input_folders: List[str], output_folder: str) -> tuple:
         """
         Объединяет несколько FAISS-баз с проверкой совместимости
@@ -778,6 +787,57 @@ class DBConstructor(RAGProcessor):
             self._save_merged_metadata(output_folder, main_meta)
 
             return True, f"Базы успешно объединены в {output_folder}"
+
+        except Exception as e:
+            return False, f"Критическая ошибка: {str(e)}"
+
+    def safe_hybrid_merge(self, input_folders: List[str], output_folder: str) -> tuple:
+        """Объединение только если есть минимум 2 базы каждого типа"""
+        txt_msg = ""
+        tab_msg = ""
+        result = ""
+
+        try:
+            os.makedirs(os.path.join(output_folder, "text_db"), exist_ok=True)
+            os.makedirs(os.path.join(output_folder, "table_db"), exist_ok=True)
+
+            # Фильтрация текстовых баз
+            text_folders = [
+                os.path.join(f, "text_db") for f in input_folders
+                if os.path.exists(os.path.join(f, "text_db"))
+                   and os.listdir(os.path.join(f, "text_db"))
+            ]
+
+            # Объединение текстов (только если >1 базы)
+            if len(text_folders) > 1:
+                success, result = self.merge_databases(text_folders, os.path.join(output_folder, "text_db"))
+                if not success:
+                    return False, f"Ошибка объединения текстов: {result}"
+            elif text_folders:  # Если ровно 1 база - просто копируем
+                shutil.copytree(text_folders[0], os.path.join(output_folder, "text_db"), dirs_exist_ok=True)
+                txt_msg = "Скопирована единственная текстовая база"
+            else:
+                txt_msg = "Нет текстовых баз для объединения"
+
+            # Фильтрация табличных баз
+            table_folders = [
+                os.path.join(f, "table_db") for f in input_folders
+                if os.path.exists(os.path.join(f, "table_db"))
+                   and os.listdir(os.path.join(f, "table_db"))
+            ]
+
+            # Объединение таблиц (только если >1 базы)
+            if len(table_folders) > 1:
+                success, result = self.merge_databases(table_folders, os.path.join(output_folder, "table_db"))
+                if not success:
+                    return False, f"Ошибка объединения таблиц: {result}"
+            elif table_folders:  # Если 1 база - копируем
+                shutil.copytree(table_folders[0], os.path.join(output_folder, "table_db"), dirs_exist_ok=True)
+                tab_msg = "Скопирована единственная табличная база"
+            else:
+                tab_msg = "Нет табличных баз для объединения"
+
+            return True, f"{result}. {txt_msg+'.'} {tab_msg+'.'}"
 
         except Exception as e:
             return False, f"Критическая ошибка: {str(e)}"
@@ -876,8 +936,83 @@ class DBConstructor(RAGProcessor):
 # ==================================================================================================
 # Поиск
 
+    def mmr_search(
+            self,
+            query: str,
+            db_folder: str,
+            k: int = 5,
+            lambda_mult: float = 0.5
+    ) -> List[LangDoc]:
+        """Поиск с добавлением названия документа к основным чанкам"""
+        db_result = self.faiss_loader(db_folder, hybrid_mode=True)
+        if not db_result["success"]:
+            raise ValueError(db_result["error"])
 
+        # 1. Получаем первоначальные результаты через MMR
+        text_results = []
+        if db_result["text_db"]:
+            text_results = db_result["text_db"].max_marginal_relevance_search(query, k=k, lambda_mult=lambda_mult)
 
+        table_results = []
+        if db_result["table_db"]:
+            table_results = db_result["table_db"].max_marginal_relevance_search(query, k=k, lambda_mult=lambda_mult)
+
+        # 2. Собираем все уникальные чанки (основные + связанные)
+        all_chunks = {}
+        title_map = {}  # Храним соответствие doc_id -> _title
+
+        for chunk in text_results + table_results:
+            doc_id = chunk.metadata["doc_id"]
+
+            # Запоминаем название документа при первом встреченном чанке
+            if doc_id not in title_map:
+                title_map[doc_id] = chunk.metadata.get("_title", f"Документ {doc_id}")
+
+            # Добавляем основной чанк
+            if chunk.metadata["chunk_id"] not in all_chunks:
+                all_chunks[chunk.metadata["chunk_id"]] = chunk
+
+            # Добавляем связанные чанки
+            for linked_id in chunk.metadata.get("linked", []):
+                linked_chunk = self._get_chunk_by_id(linked_id, db_result)
+                if linked_chunk and linked_chunk.metadata["chunk_id"] not in all_chunks:
+                    all_chunks[linked_chunk.metadata["chunk_id"]] = linked_chunk
+
+                    # Запоминаем название для связанных чанков
+                    linked_doc_id = linked_chunk.metadata["doc_id"]
+                    if linked_doc_id not in title_map:
+                        title_map[linked_doc_id] = linked_chunk.metadata.get("_title", f"Документ {linked_doc_id}")
+
+        # 3. Обогащаем "головные" чанки названиями документов
+        final_results = []
+        for chunk in all_chunks.values():
+            # Создаем копию метаданных, чтобы не изменять оригинал
+            enriched_metadata = chunk.metadata.copy()
+
+            # Добавляем название только к "головным" чанкам (тем, которые найдены через MMR)
+            if chunk.metadata["chunk_id"] in {c.metadata["chunk_id"] for c in text_results + table_results}:
+                enriched_metadata["document_title"] = title_map.get(chunk.metadata["doc_id"], "")
+
+            # Создаем новый документ с обогащенными метаданными
+            final_results.append(LangDoc(
+                page_content=chunk.page_content,
+                metadata=enriched_metadata
+            ))
+
+        # 4. Сортируем по chunk_id для сохранения порядка документа
+        return sorted(
+            final_results,
+            key=lambda x: x.metadata["chunk_id"]
+        )[:k * 2]
+
+    def _get_chunk_by_id(self, chunk_id: str, db_result: dict) -> Optional[LangDoc]:
+        """Поиск чанка по ID с проверкой всех хранилищ"""
+        for db_type in ["text_db", "table_db"]:
+            if db_result.get(db_type):
+                for doc in db_result[db_type].docstore._dict.values():
+                    if doc.metadata["chunk_id"] == chunk_id:
+                        return doc
+        return None
 
 #===================================================================================================
 class Tester(DBConstructor):

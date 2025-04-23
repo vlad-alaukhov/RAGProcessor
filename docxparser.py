@@ -13,8 +13,11 @@ folders = [os.path.join(root_folder, name) for name in os.listdir(root_folder)]
 for folder in folders:
     file_names = [os.path.join(folder, name) for name in os.listdir(folder)]
     for name in file_names:
-        out_path = f"{os.getcwd()}/FAISS/{name.split('.')[-2]}"
-        chunk_file = f"{os.getcwd()}/Chunks/{name.split('.')[-2]}.txt"
+        file_name = '/'.join(name.split('.')[-2].split('/')[5:])
+        out_path = f"{os.getcwd()}/FAISS/{file_name}"
+        chunk_file = f"{os.getcwd()}/Chunks/{file_name}.txt"
+
+        os.makedirs(os.path.dirname(chunk_file), exist_ok=True)
 
         print(f"Документ: {name}")
         print(f"База: {out_path}")
@@ -24,10 +27,10 @@ for folder in folders:
         parsed_chunks = constructor.document_parser(name)
         prepared_chunks = constructor.prepare_chunks(parsed_chunks)
 
-        with open(chunk_file, "w") as file:
-            for chunk in prepared_chunks:
-                print(f"{chunk}\nНарушены связи: {constructor.validate_chunks(prepared_chunks)}"
-                      f"\n------------------------------", file=file)
+        with open(chunk_file, "a") as file:
+            file.writelines(f"{prepared_chunks}\nНарушены связи: {constructor.validate_chunks(prepared_chunks)}"
+                      f"\n------------------------------")
+
 
         success, msg = constructor.hybrid_vectorizator(docs=prepared_chunks, db_folder=out_path)
         print(success, msg)

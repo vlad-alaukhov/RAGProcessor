@@ -286,7 +286,6 @@ class DBConstructor(RAGProcessor):
 
     def prepare_chunks(self, dry_chunks: list, file_path: str) -> List[LangDoc]:
         processed_chunks = []
-        doc_id = None
         prev_text_chunk_id = None
         prev_table_id = None
         prev_was_table = False  # Флаг для отслеживания последовательных таблиц
@@ -957,6 +956,38 @@ class DBConstructor(RAGProcessor):
         if db_result["table_db"]:
             table_results = db_result["table_db"].max_marginal_relevance_search(query, k=k, lambda_mult=lambda_mult)
 
+        return self._process_search_results(text_results, table_results, db_result, k)
+
+    def sim_search(
+            self,
+            query: str,
+            db_folder: str,
+            k: int = 5,
+            **kwargs
+    ) -> List[LangDoc]:
+        """Аналог mmr_search с обычным similarity_search"""
+        db_result = self.faiss_loader(db_folder, hybrid_mode=True)
+        if not db_result["success"]:
+            raise ValueError(db_result["error"])
+
+        # 1. Получаем первоначальные результаты через similarity_search
+        text_results = []
+        if db_result["text_db"]:
+            text_results = db_result["text_db"].similarity_search(query, k=k, **kwargs)
+
+        table_results = []
+        if db_result["table_db"]:
+            table_results = db_result["table_db"].similarity_search(query, k=k, **kwargs)
+
+        # 2. Используем общую логику обработки
+        return self._process_search_results(text_results, table_results, db_result, k)
+
+    def _process_search_results(self,
+                                text_results: List[LangDoc],
+                                table_results: List[LangDoc],
+                                db_result: dict,
+                                k: int
+    ) -> List[LangDoc]:
         # 2. Собираем все уникальные чанки (основные + связанные)
         all_chunks = {}
         title_map = {}  # Храним соответствие doc_id -> _title

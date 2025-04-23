@@ -25,7 +25,7 @@ for folder in folders:
         print()
 
         parsed_chunks = constructor.document_parser(name)
-        prepared_chunks = constructor.prepare_chunks(parsed_chunks)
+        prepared_chunks = constructor.prepare_chunks(parsed_chunks, name)
 
         with open(chunk_file, "a") as file:
             file.writelines(f"{prepared_chunks}\nНарушены связи: {constructor.validate_chunks(prepared_chunks)}"

@@ -712,7 +712,7 @@ class DBConstructor(RAGProcessor):
         """
         result = {
             "success": False,
-            "db": None,
+            "db": Optional[FAISS] | None,
             "is_e5_model": False,
             "error": ""
         }
@@ -938,39 +938,40 @@ class DBConstructor(RAGProcessor):
     def mmr_search(
             self,
             query: str,
-            db_folder: str,
+            db_result: Dict[str, Any],
             k: int = 5,
-            lambda_mult: float = 0.5
+            lambda_mult: float = 0.5,
+            **kwargs
     ) -> List[LangDoc]:
-        """Поиск с добавлением названия документа к основным чанкам"""
-        db_result = self.faiss_loader(db_folder, hybrid_mode=True)
-        if not db_result["success"]:
-            raise ValueError(db_result["error"])
+        """Аналог mmr_search для предзагруженных баз"""
+        if not db_result.get("text_db") and not db_result.get("table_db"):
+            raise ValueError("Нет данных для поиска")
 
-        # 1. Получаем первоначальные результаты через MMR
         text_results = []
         if db_result["text_db"]:
-            text_results = db_result["text_db"].max_marginal_relevance_search(query, k=k, lambda_mult=lambda_mult)
+            text_results = db_result["text_db"].max_marginal_relevance_search(
+                query, k=k, lambda_mult=lambda_mult, **kwargs
+            )
 
         table_results = []
         if db_result["table_db"]:
-            table_results = db_result["table_db"].max_marginal_relevance_search(query, k=k, lambda_mult=lambda_mult)
+            table_results = db_result["table_db"].max_marginal_relevance_search(
+                query, k=k, lambda_mult=lambda_mult, **kwargs
+            )
 
         return self._process_search_results(text_results, table_results, db_result, k)
 
     def sim_search(
             self,
             query: str,
-            db_folder: str,
+            db_result: Dict[str, Any],  # {text_db: FAISS, table_db: FAISS}
             k: int = 5,
             **kwargs
     ) -> List[LangDoc]:
-        """Аналог mmr_search с обычным similarity_search"""
-        db_result = self.faiss_loader(db_folder, hybrid_mode=True)
-        if not db_result["success"]:
-            raise ValueError(db_result["error"])
+        """Аналог sim_search, но работает с предзагруженными базами"""
+        if not db_result.get("text_db") and not db_result.get("table_db"):
+            raise ValueError("Нет данных для поиска")
 
-        # 1. Получаем первоначальные результаты через similarity_search
         text_results = []
         if db_result["text_db"]:
             text_results = db_result["text_db"].similarity_search(query, k=k, **kwargs)
@@ -979,7 +980,6 @@ class DBConstructor(RAGProcessor):
         if db_result["table_db"]:
             table_results = db_result["table_db"].similarity_search(query, k=k, **kwargs)
 
-        # 2. Используем общую логику обработки
         return self._process_search_results(text_results, table_results, db_result, k)
 
     def _process_search_results(self,

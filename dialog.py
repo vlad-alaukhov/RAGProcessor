@@ -2,7 +2,7 @@ from rag_processor import *
 
 dialog = DBConstructor()
 
-query = "Какими должны быть помещения для лабораторной деятельности?"
+query = "Конструктивные характеристики помещений"
 faiss_folder = "/home/home/Projects/RAGProcessor/DB_FAISS/ПРАВИЛА_ОРГАНИЗАЦИИ_руководства_по_качеству"
 
 

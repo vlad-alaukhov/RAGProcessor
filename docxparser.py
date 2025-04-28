@@ -36,10 +36,12 @@ for folder in folders:
                                                        db_folder=out_path,
                                                        text_model="ai-forever/sbert_large_nlu_ru",
                                                        table_model="deepset/all-mpnet-base-v2-table",  # Для таблиц
-                                                       model_type="huggingface",
                                                        encode_kwargs={
                                                            "normalize_embeddings": True,  # Для обеих моделей
-                                                           "batch_size": 16  # Для экономии RAM
+                                                           "batch_size": 16,  # Для экономии RAM
+                                                       },
+                                                       model_kwargs = {
+                                                           "device": "cpu"  # Если нет GPU
                                                        }
         )
         print(success, msg)

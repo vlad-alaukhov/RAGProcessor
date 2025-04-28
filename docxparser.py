@@ -32,5 +32,14 @@ for folder in folders:
                       f"\n------------------------------")
 
 
-        success, msg = constructor.hybrid_vectorizator(docs=prepared_chunks, db_folder=out_path)
+        success, msg = constructor.hybrid_vectorizator(docs=prepared_chunks,
+                                                       db_folder=out_path,
+                                                       text_model="ai-forever/sbert_large_nlu_ru",
+                                                       table_model="deepset/all-mpnet-base-v2-table",  # Для таблиц
+                                                       model_type="huggingface",
+                                                       encode_kwargs={
+                                                           "normalize_embeddings": True,  # Для обеих моделей
+                                                           "batch_size": 16  # Для экономии RAM
+                                                       }
+        )
         print(success, msg)

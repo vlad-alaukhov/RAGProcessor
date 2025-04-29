@@ -576,12 +576,9 @@ class DBConstructor(RAGProcessor):
             try:
                 with open(os.path.join(db_folder, "metadata.json"), "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
-            except (PermissionError, OSError) as e:
+                return True, f"База успешно создана в {db_folder}"
+            except Exception as e:
                 return False, f"Ошибка записи метаданных: {str(e)}"
-            except (TypeError, json.JSONDecodeError) as e:
-                return False, f"Ошибка формата метаданных: {str(e)}"
-
-            return True, f"База успешно создана в {db_folder}"
 
         except Exception as e:
             return False, f"Ошибка векторизации: {str(e)}"

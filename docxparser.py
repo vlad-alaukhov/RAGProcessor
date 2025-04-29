@@ -8,31 +8,57 @@ constructor = DBConstructor()
 
 root_folder = "/home/home/Projects/Uraltest"
 
-folders = [os.path.join(root_folder, name) for name in os.listdir(root_folder)]
+doc_folders = [os.path.join(root_folder, name) for name in os.listdir(root_folder)]
 
-for folder in folders:
-    file_names = [os.path.join(folder, name) for name in os.listdir(folder)]
-    for name in file_names:
-        file_name = '/'.join(name.split('.')[-2].split('/')[5:])
-        out_path = f"{os.getcwd()}/FAISS/{file_name}"
-        chunk_file = f"{os.getcwd()}/Chunks/{file_name}.txt"
-
-        os.makedirs(os.path.dirname(chunk_file), exist_ok=True)
-
-        print(f"Документ: {name}")
-        print(f"База: {out_path}")
+for doc_folder in doc_folders:
+    doc_names = os.listdir(doc_folder) # [os.path.join(folder, name) for name in os.listdir(folder)]
+    for doc_name in doc_names:
+        cut_name = doc_name.split('.')[-2]
+        out_path = f"{os.getcwd()}/FAISS/{os.path.basename(doc_folder)}/{cut_name}" # Папка, в которую сохранится FAISS: Текущая/FAISS/Имя_файла_документа(Без ".docx")
+        doc_file = os.path.join(doc_folder, doc_name)
+        chunk_file = f"{os.getcwd()}/Chunks/{os.path.basename(doc_folder)}/{cut_name}.txt"
+        print(f"Докум: {doc_file}")
+        print(f"База:  {out_path}")
         print(f"Чанки: {chunk_file}")
-        print()
 
-        parsed_chunks = constructor.document_parser(name)
-        prepared_chunks = constructor.prepare_chunks(parsed_chunks, name)
+        os.makedirs(os.path.dirname(chunk_file), exist_ok=True) # Директория для чанков: Текущая/Chunks/Имя_файла_документа |(Без ".docx")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)   # Директория для FAISS:  Текущая/FAISS/Имя_файла_документа  |(Без ".docx")
+
+
+        parsed_chunks = constructor.document_parser(doc_file)
+        prepared_chunks = constructor.prepare_chunks(parsed_chunks, doc_file)
 
         with open(chunk_file, "a") as file:
             file.writelines(f"{prepared_chunks}\nНарушены связи: {constructor.validate_chunks(prepared_chunks)}"
                       f"\n------------------------------")
 
+        '''text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
+        table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
 
-        success, msg = constructor.hybrid_vectorizator(docs=prepared_chunks,
+        # 2. Векторизация текстов (с нормализацией)
+        tx_ok, tx_msg = constructor.vectorizator(
+            docs=text_chunks,
+            db_folder=os.path.join(out_path, "text_db"),
+            model_name="ai-forever/sbert_large_nlu_ru",
+            model_type="huggingface",
+            encode_kwargs={"normalize_embeddings": True}  # Для текстов
+        )
+        
+        print(tx_ok, tx_msg)
+
+        tb_ok, tb_msg = constructor.vectorizator(
+            docs=table_chunks,
+            db_folder="output_hybrid/table_db",
+            model_name="deepset/all-mpnet-base-v2-table",
+            model_type="huggingface",
+            encode_kwargs={"normalize_embeddings": False}  # Для таблиц
+        )
+        
+        print(tb_ok, tb_msg)'''
+
+
+
+        '''success, msg = constructor.hybrid_vectorizator(docs=prepared_chunks,
                                                        db_folder=out_path,
                                                        text_model="ai-forever/sbert_large_nlu_ru",
                                                        table_model="deepset/all-mpnet-base-v2-table",  # Для таблиц
@@ -44,4 +70,4 @@ for folder in folders:
                                                            "device": "cpu"  # Если нет GPU
                                                        }
         )
-        print(success, msg)
+        print(success, msg)'''

@@ -552,7 +552,7 @@ class DBConstructor(RAGProcessor):
                     model_kwargs=model_kwargs,
                     encode_kwargs=encode_kwargs
                 )
-                distance_strategy = "COSINE" if is_e5_model else "L2"
+                distance_strategy = "COSINE" if encode_kwargs.get('normalize_embeddings', False) else "L2"
             else:
                 return False, f"Неподдерживаемый тип модели: {model_type}"
 

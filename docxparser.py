@@ -1,5 +1,4 @@
 import os
-
 from rag_processor import *
 import textwrap
 
@@ -20,6 +19,7 @@ for doc_folder in doc_folders:
         print(f"Докум: {doc_file}")
         print(f"База:  {out_path}")
         print(f"Чанки: {chunk_file}")
+        print("-------------------------------")
 
         os.makedirs(os.path.dirname(chunk_file), exist_ok=True) # Директория для чанков: Текущая/Chunks/Имя_файла_документа |(Без ".docx")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)   # Директория для FAISS:  Текущая/FAISS/Имя_файла_документа  |(Без ".docx")
@@ -28,11 +28,12 @@ for doc_folder in doc_folders:
         parsed_chunks = constructor.document_parser(doc_file)
         prepared_chunks = constructor.prepare_chunks(parsed_chunks, doc_file)
 
-        with open(chunk_file, "a") as file:
-            file.writelines(f"{prepared_chunks}\nНарушены связи: {constructor.validate_chunks(prepared_chunks)}"
-                      f"\n------------------------------")
+        with open(chunk_file, "a", encoding="utf-8") as file:
+            for chunk in prepared_chunks:
+                file.write(f"Контент:\n{chunk.page_content}\n---\nМетаданные: {chunk.metadata}\n")
+            file.write(f"Нарушены связи: {constructor.validate_chunks(prepared_chunks)}\n=============\n")
 
-        '''text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
+        text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
         table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
 
         # 2. Векторизация текстов (с нормализацией)
@@ -48,13 +49,14 @@ for doc_folder in doc_folders:
 
         tb_ok, tb_msg = constructor.vectorizator(
             docs=table_chunks,
-            db_folder="output_hybrid/table_db",
+            db_folder=os.path.join(out_path, "table_db"),
             model_name="deepset/all-mpnet-base-v2-table",
             model_type="huggingface",
             encode_kwargs={"normalize_embeddings": False}  # Для таблиц
         )
         
-        print(tb_ok, tb_msg)'''
+        print(tb_ok, tb_msg)
+        print("===================================")
 
 
 

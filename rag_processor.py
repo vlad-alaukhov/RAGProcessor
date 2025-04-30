@@ -2,6 +2,7 @@ import json
 import shutil
 from abc import ABC
 import fitz
+import numpy as np
 from camelot import read_pdf
 import hashlib
 import pandas as pd
@@ -19,7 +20,7 @@ import requests
 from dotenv import load_dotenv
 import time
 # from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Any, Dict, Generator, Optional
+from typing import List, Any, Dict, Generator, Optional, Tuple
 from langchain_core.embeddings import Embeddings
 
 class RAG(ABC):
@@ -961,26 +962,43 @@ class DBConstructor(RAGProcessor):
 
         return self._process_search_results(text_results, table_results, db_result, k)
 
-    def sim_search(
+    def sim_search_with_scores(
             self,
             query: str,
-            db_result: Dict[str, Any],  # {text_db: FAISS, table_db: FAISS}
+            db_result: Dict[str, Any],
             k: int = 5,
             **kwargs
-    ) -> List[LangDoc]:
-        """Аналог sim_search, но работает с предзагруженными базами"""
-        if not db_result.get("text_db") and not db_result.get("table_db"):
-            raise ValueError("Нет данных для поиска")
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Поиск с оценкой релевантности. Возвращает топ-3 текста и таблицы."""
+        result = {"texts": [], "tables": []}
 
-        text_results = []
-        if db_result["text_db"]:
-            text_results = db_result["text_db"].similarity_search(query, k=k, **kwargs)
+        try:
+            # Поиск в текстовой базе
+            if db_result.get("text_db"):
+                text_results = db_result["text_db"].similarity_search_with_score(query, k=k, **kwargs)
+                # Сортировка и выбор топ-3
+                sorted_texts = sorted(text_results, key=lambda x: x[1], reverse=True)[:3]
+                result["texts"] = [{
+                    "content": doc.page_content,
+                    "score": round(score, 6),
+                    "metadata": doc.metadata
+                } for doc, score in sorted_texts]
 
-        table_results = []
-        if db_result["table_db"]:
-            table_results = db_result["table_db"].similarity_search(query, k=k, **kwargs)
+            # Поиск в табличной базе
+            if db_result.get("table_db"):
+                table_results = db_result["table_db"].similarity_search_with_score(query, k=k, **kwargs)
+                # Сортировка и выбор топ-3
+                sorted_tables = sorted(table_results, key=lambda x: x[1], reverse=False)[:3]
+                result["tables"] = [{
+                    "content": doc.page_content,
+                    "score": round(score, 6),
+                    "metadata": doc.metadata
+                } for doc, score in sorted_tables]
 
-        return self._process_search_results(text_results, table_results, db_result, k)
+        except Exception as e:
+            print(f"Ошибка поиска: {str(e)}")
+
+        return result
 
     def _process_search_results(self,
                                 text_results: List[LangDoc],
@@ -1044,119 +1062,6 @@ class DBConstructor(RAGProcessor):
                     if doc.metadata["chunk_id"] == chunk_id:
                         return doc
         return None
-
-    def prepare_response_data_from_preloaded(
-            self,
-            query: str,
-            db_result: Dict[str, Any],  # Предзагруженная база из preloaded_dbs
-            text_k: int = 5,
-            table_k: int = 3,
-            mmr_lambda: float = 0.3,
-            include_linked: bool = True
-    ) -> Dict[str, any]:
-        """
-        Оптимизированная версия для работы с предзагруженными базами.
-        Не вызывает faiss_loader, использует готовый db_result.
-        """
-        # 1. Поиск с MMR в предзагруженных базах
-        text_results = []
-        if db_result["text_db"]:
-            text_results = db_result["text_db"].max_marginal_relevance_search(
-                query, k=text_k, lambda_mult=mmr_lambda
-            )
-            for doc in text_results:
-                doc.metadata["score"] = self._calculate_score(doc, query)
-
-        table_results = []
-        if db_result.get("table_db"):
-            table_results = db_result["table_db"].max_marginal_relevance_search(
-                query, k=table_k, lambda_mult=mmr_lambda
-            )
-            for doc in table_results:
-                doc.metadata["score"] = self._calculate_score(doc, query)
-
-        # 2. Сбор всех чанков
-        all_chunks = text_results + table_results
-
-        # 3. Добавление связанных чанков
-        if include_linked:
-            linked_chunks = self._get_linked_chunks(all_chunks, db_result)
-            all_chunks.extend(linked_chunks)
-
-        # 4. Группировка
-        return {
-            "query": query,
-            "grouped_quotes": self._group_quotes_by_document(all_chunks),
-            "debug_info": {
-                "text_chunks_count": len(text_results),
-                "table_chunks_count": len(table_results),
-                "linked_chunks_count": len(all_chunks) - (len(text_results) + len(table_results))
-            }
-        }
-
-    def _calculate_score(self, chunk: LangDoc, query: str) -> float:
-        """Расчёт score для чанка (упрощённая версия)"""
-        # Если score уже есть (например, из similarity_search_with_score)
-        if "score" in chunk.metadata:
-            return chunk.metadata["score"]
-
-        # Иначе: подсчёт совпадений слов
-        query_words = set(query.lower().split())
-        chunk_words = set(chunk.page_content.lower().split())
-        common_words = query_words & chunk_words
-        return len(common_words) / len(query_words) if query_words else 0
-
-    def _get_linked_chunks(
-            self,
-            chunks: List[LangDoc],
-            db_result: Dict[str, Any]
-    ) -> List[LangDoc]:
-        """Получение связанных чанков из всех баз"""
-        linked_chunks = []
-        seen_ids = {chunk.metadata["chunk_id"] for chunk in chunks}
-
-        for chunk in chunks:
-            for linked_id in chunk.metadata.get("linked", []):
-                if linked_id not in seen_ids:
-                    for db_type in ["text_db", "table_db"]:
-                        if db_result.get(db_type):
-                            try:
-                                linked_doc = db_result[db_type].docstore._dict.get(linked_id)
-                                if linked_doc:
-                                    linked_chunks.append(linked_doc)
-                                    seen_ids.add(linked_id)
-                                    break
-                            except AttributeError:
-                                continue
-        return linked_chunks
-
-    def _group_quotes_by_document(
-            self,
-            chunks: List[LangDoc]
-    ) -> Dict[str, List[Dict]]:
-        """Группирует чанки по документам с сортировкой по score"""
-        documents = {}
-
-        for chunk in chunks:
-            doc_id = chunk.metadata["doc_id"]
-            if doc_id not in documents:
-                documents[doc_id] = {
-                    "title": chunk.metadata.get("_title", f"Документ {doc_id}"),
-                    "chunks": []
-                }
-
-            documents[doc_id]["chunks"].append({
-                "content": chunk.page_content,
-                "score": chunk.metadata.get("score", 0),
-                "type": chunk.metadata["element_type"],
-                "chunk_id": chunk.metadata["chunk_id"]
-            })
-
-        # Сортировка чанков внутри каждого документа
-        for doc in documents.values():
-            doc["chunks"].sort(key=lambda x: -x["score"])
-
-        return documents
 #===================================================================================================
 class Tester(DBConstructor):
     def __init__(self):

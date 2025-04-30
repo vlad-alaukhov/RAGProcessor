@@ -1,9 +1,12 @@
+from pprint import pprint
+
 from rag_processor import *
+
 
 dialog = DBConstructor()
 
-query = "Конструктивные характеристики помещений"
-faiss_folder = "/home/home/Projects/RAGProcessor/DB_FAISS/ПРАВИЛА_ОРГАНИЗАЦИИ_руководства_по_качеству"
+query = "Как использовать знак национальной системы аккредитации?"
+faiss_folder = "/home/home/Projects/FBUUraltestDoci/DB_FAISS/Политики"
 
 
 def add_title_to_head_chunk(chunks: List[LangDoc]) -> List[LangDoc]:
@@ -28,10 +31,14 @@ def add_title_to_head_chunk(chunks: List[LangDoc]) -> List[LangDoc]:
 
     return output
 
-output = dialog.sim_search(query, faiss_folder, k=10)
+db_faiss = dialog.faiss_loader(faiss_folder, True)
 
-results = add_title_to_head_chunk(output)
+output = dialog.sim_search_with_scores(query, db_faiss, k=7)
 
-# Вывод результатов
-for i, doc in enumerate(results):
-    print(doc.page_content.strip())
+pprint(output)
+
+# results = add_title_to_head_chunk(output)
+#
+# # Вывод результатов
+# for i, doc in enumerate(results):
+#     print(doc.page_content.strip())

@@ -5,6 +5,7 @@ from rag_processor import *
 import textwrap
 
 constructor = DBConstructor()
+constructor.chunk_size = 600
 
 
 root_folder = "/home/home/Projects/Uraltest_beta"

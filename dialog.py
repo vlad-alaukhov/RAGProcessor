@@ -5,8 +5,8 @@ from rag_processor import *
 
 dialog = DBConstructor()
 
-query = "Как использовать знак национальной системы аккредитации?"
-faiss_folder = "/home/home/Projects/FBUUraltestDoci/DB_FAISS/Политики"
+query = "Сведения учетной формы для СИ должны содержать"
+faiss_folder = "/home/home/Projects/RAGProcessor/FAISS/РАБОЧИЕ_ПОРЯДКИ_ОБЩИЕ/ПР-15-2023_учета_оборудования_и_его_состояния"
 
 
 def add_title_to_head_chunk(chunks: List[LangDoc]) -> List[LangDoc]:
@@ -33,7 +33,7 @@ def add_title_to_head_chunk(chunks: List[LangDoc]) -> List[LangDoc]:
 
 db_faiss = dialog.faiss_loader(faiss_folder, True)
 
-output = dialog.sim_search_with_scores(query, db_faiss, k=7)
+output = dialog.sim_search_with_scores(query, db_faiss, k=10)
 
 pprint(output)
 

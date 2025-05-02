@@ -137,7 +137,7 @@ class DBConstructor(RAGProcessor):
 
 #=============================================================================
 # Парсинг документов pdf, docx, xlsx
-    def document_parser(self, file_path: str) -> list:
+    def document_parser(self, file_path: str) -> dict | list:
         """Универсальный парсер документов с единой структурой метаданных"""
         if file_path.endswith('.docx'):
             return self._parse_docx(file_path)
@@ -148,51 +148,116 @@ class DBConstructor(RAGProcessor):
         else:
             raise ValueError("Unsupported file format")
 
-    def _parse_docx(self, file_path: str, verbose = False) -> list:
-
+# --------------------------------------------------------
+# Парсинг docx
+    def _parse_docx(self, file_path: str, verbose: bool = False) -> list:
         doc = Docx(file_path)
-        # Собираем в список элементы документа вообще все
-        elements = [elem for elem in doc.element.body if elem.tag.endswith(('p', 'tbl'))]
+        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
 
-        groups = []
-        current_group = ""
+        # Извлекаем заголовок документа
+        title = None
+        for paragraph in doc.paragraphs:
+            if paragraph.style.name == 'Heading 1':
+                title = paragraph.text.strip()
+                break
+        if not title:
+            title = os.path.basename(file_path)
 
-        for i, elem in enumerate(elements):
+        chunks = []
+        current_text = []
+        chunk_counter = 0
+        tables = doc.tables
+        table_index = 0
 
-            if elem.tag.endswith('p'):
-                text = elem.text.strip()
+        for paragraph in doc.paragraphs:
+            text = paragraph.text.strip()
 
-                # Пустой абзац = разделитель группы
-                if not text:
-                    if current_group:
-                        groups.append(current_group)
-                        current_group = ""
-                    continue
+            # Если это обычный текст
+            if text and paragraph.style.name != 'Heading 1':
+                current_text.append(text)
 
-                current_group += elem.text.strip() + '\n'  # Добавляем НЕпустой абзац
+            # Если пустая строка - сохраняем накопленный текст
+            elif not text:
+                if current_text:
+                    chunk_id = f"{doc_id}_p_{chunk_counter}"
+                    chunks.append({
+                        "content": "\n".join(current_text),
+                        "metadata": {
+                            "doc_id": doc_id,
+                            "chunk_id": chunk_id,
+                            "element_type": "text",
+                            "linked": [],
+                            "_title": title
+                        }
+                    })
+                    current_text = []
+                    chunk_counter += 1
 
-            elif elem.tag.endswith('tbl'):
-                # Прерываем текст перед таблицей
-                if current_group:
-                    groups.append(current_group.strip())
-                    current_group = ""
+            # Проверяем, есть ли после этого параграфа таблица
+            if table_index < len(tables) and tables[table_index]._element is paragraph._p.getnext():
+                # Если есть текст перед таблицей - связываем его с таблицей
+                if current_text:
+                    chunk_id = f"{doc_id}_p_{chunk_counter}"
+                    chunks.append({
+                        "content": "\n".join(current_text),
+                        "metadata": {
+                            "doc_id": doc_id,
+                            "chunk_id": chunk_id,
+                            "element_type": "text",
+                            "linked": [f"{doc_id}_tbl_{chunk_counter}"],
+                            "_title": title
+                        }
+                    })
+                    current_text = []
+                    chunk_counter += 1
 
-                try:
-                    # Получаем объект таблицы через API
-                    table = next(t for t in doc.tables if t._element is elem)
-                    table_data = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-                    groups.append(table_data)
-                except Exception as e:
-                    print(f"Ошибка обработки таблицы: {str(e)}")
-                    prev_table_id = None
-                    continue
+                # Обрабатываем таблицу
+                table = tables[table_index]
+                markdown_table = []
 
-            # Добавляем последнюю группу (если не была добавлена)
-        if current_group:
-            groups.append(current_group)
+                # Заголовки таблицы
+                headers = [cell.text.strip() for cell in table.rows[0].cells]
+                markdown_table.append("| " + " | ".join(headers) + " |")
+                markdown_table.append("| " + " | ".join(["---"] * len(headers)) + " |")
 
-        if verbose: print(each for each in groups)
-        return groups
+                # Данные таблицы
+                for row in table.rows[1:]:
+                    row_data = [cell.text.strip() for cell in row.cells]
+                    markdown_table.append("| " + " | ".join(row_data) + " |")
+
+                chunks.append({
+                    "content": "\n".join(markdown_table),
+                    "metadata": {
+                        "doc_id": doc_id,
+                        "chunk_id": f"{doc_id}_tbl_{chunk_counter}",
+                        "element_type": "table",
+                        "linked": [],
+                        "_title": title
+                    }
+                })
+                table_index += 1
+                chunk_counter += 1
+
+        # Добавляем оставшийся текст
+        if current_text:
+            chunks.append({
+                "content": "\n".join(current_text),
+                "metadata": {
+                    "doc_id": doc_id,
+                    "chunk_id": f"{doc_id}_p_{chunk_counter}",
+                    "element_type": "text",
+                    "linked": [],
+                    "_title": title
+                }
+            })
+
+        if verbose:
+            print(f"Извлечено {len(chunks)} чанков из документа")
+            for chunk in chunks:
+                print(f"Чанк {chunk['metadata']['chunk_id']}: {chunk['content'][:50]}...")
+
+        return [LangDoc(page_content=chunk["content"], metadata=chunk["metadata"]) for chunk in chunks]
+# -------------------------------------------------------
 
     def _parse_pdf(self, file_path: str) -> list:
         """Парсинг PDF с базовым разделением текста и таблиц"""
@@ -287,82 +352,98 @@ class DBConstructor(RAGProcessor):
 
     def prepare_chunks(self, dry_chunks: list, file_path: str) -> List[LangDoc]:
         processed_chunks = []
-        prev_text_chunk_id = None
-        prev_table_id = None
-        prev_was_table = False  # Флаг для отслеживания последовательных таблиц
+        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
         global_counter = 0
+        MAX_CHUNK_SIZE = 800
 
-        # Извлекаем имя файла без расширения
-        file_name = os.path.splitext(os.path.basename(file_path))[0]
+        # Сначала обрабатываем все чанки без связей
+        for chunk in dry_chunks:
+            is_table = chunk.metadata["element_type"] == "table"
+            content = chunk.page_content
+            metadata = chunk.metadata.copy()
 
-        # Генерируем doc_id на основе хеша
-        doc_id = hashlib.md5(file_name.encode()).hexdigest()[:8]
+            if is_table:
+                # Для таблиц - разбиваем по строкам с сохранением заголовков
+                lines = content.split('\n')
+                table_chunks = []
+                current_chunk = []
 
-        for idx, chunk in enumerate(dry_chunks):
-            is_table = isinstance(chunk, list) and all(isinstance(row, list) for row in chunk)
+                for line in lines:
+                    if len('\n'.join(current_chunk + [line])) > MAX_CHUNK_SIZE and len(current_chunk) >= 2:
+                        table_chunks.append('\n'.join(current_chunk))
+                        current_chunk = [lines[0], lines[1]]  # Сохраняем заголовки таблицы
+                    current_chunk.append(line)
 
-            # Обработка текста
-            if not is_table:
-                if len(chunk) > 800:
-                    split_texts = self.split_text_recursive(chunk, 800)
-                else:
-                    split_texts = [chunk]
+                if current_chunk:
+                    table_chunks.append('\n'.join(current_chunk))
 
-                prev_sub_id = None
-                for i, text in enumerate(split_texts):
-                    global_counter += 1
-                    metadata = {
+                for i, table_part in enumerate(table_chunks):
+                    chunk_id = f"{doc_id}_tbl_{global_counter}"
+                    new_metadata = {
                         "doc_id": doc_id,
-                        "doc_type": "docx",
-                        "chunk_id": f"{doc_id}_{global_counter}",
-                        "element_type": "text",
+                        "doc_type": metadata["doc_type"],
+                        "chunk_id": chunk_id,
+                        "element_type": "table",
                         "linked": [],
-                        "_title": file_name
+                        "_title": metadata["_title"]
                     }
 
-                    # Связь внутри подчанков
-                    if prev_sub_id:
-                        metadata["linked"].append(prev_sub_id)
-                        prev_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_sub_id)
-                        prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+                    # Связи между частями таблицы
+                    if i > 0:
+                        prev_id = f"{doc_id}_tbl_{global_counter - 1}"
+                        new_metadata["linked"].append(prev_id)
+                        # Обновляем предыдущую часть
+                        prev_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_id)
+                        prev_chunk.metadata["linked"].append(chunk_id)
 
-                    processed_chunks.append(LangDoc(page_content=text, metadata=metadata))
-                    prev_sub_id = metadata["chunk_id"]
-                    prev_text_chunk_id = metadata["chunk_id"]
+                    processed_chunks.append(LangDoc(
+                        page_content=table_part,
+                        metadata=new_metadata
+                    ))
+                    global_counter += 1
 
-                prev_was_table = False  # Сброс флага после текста
-
-            # Обработка таблицы
             else:
-                global_counter += 1
-                metadata = {
-                    "doc_id": doc_id,
-                    "doc_type": "docx",
-                    "chunk_id": f"{doc_id}_{global_counter}",
-                    "element_type": "table",
-                    "linked": [],
-                    "_title": file_name
-                }
+                # Для текста - используем split_text_recursive
+                text_chunks = self.split_text_recursive(content, MAX_CHUNK_SIZE)
+                for i, text in enumerate(text_chunks):
+                    chunk_id = f"{doc_id}_p_{global_counter}"
+                    new_metadata = {
+                        "doc_id": doc_id,
+                        "doc_type": metadata["doc_type"],
+                        "chunk_id": chunk_id,
+                        "element_type": "text",
+                        "linked": [],
+                        "_title": metadata["_title"]
+                    }
 
-                # Связь с предыдущим текстовым чанком
-                if prev_text_chunk_id:
-                    metadata["linked"].append(prev_text_chunk_id)
-                    prev_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_text_chunk_id)
-                    prev_chunk.metadata["linked"].append(metadata["chunk_id"])
+                    # Связи между частями текста
+                    if i > 0:
+                        prev_id = f"{doc_id}_p_{global_counter - 1}"
+                        new_metadata["linked"].append(prev_id)
+                        # Обновляем предыдущую часть
+                        prev_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_id)
+                        prev_chunk.metadata["linked"].append(chunk_id)
 
-                # Связь с предыдущей таблицей ТОЛЬКО если они идут подряд
-                if prev_was_table and prev_table_id:
-                    metadata["linked"].append(prev_table_id)
-                    prev_table_chunk = next(c for c in processed_chunks if c.metadata["chunk_id"] == prev_table_id)
-                    prev_table_chunk.metadata["linked"].append(metadata["chunk_id"])
+                    processed_chunks.append(LangDoc(
+                        page_content=text,
+                        metadata=new_metadata
+                    ))
+                    global_counter += 1
 
-                processed_chunks.append(LangDoc(page_content=str(chunk), metadata=metadata))
-                prev_text_chunk_id = None
-                prev_table_id = metadata["chunk_id"]
-                prev_was_table = True  # Устанавливаем флаг
+        # Теперь устанавливаем связи между текстом и таблицами
+        for i in range(len(processed_chunks) - 1):
+            current = processed_chunks[i]
+            next_chunk = processed_chunks[i + 1]
+
+            # Если текущий текст, а следующий - таблица
+            if current.metadata["element_type"] == "text" and next_chunk.metadata["element_type"] == "table":
+                # Связываем текст с первой частью таблицы
+                if next_chunk.metadata["chunk_id"] not in current.metadata["linked"]:
+                    current.metadata["linked"].append(next_chunk.metadata["chunk_id"])
+                if current.metadata["chunk_id"] not in next_chunk.metadata["linked"]:
+                    next_chunk.metadata["linked"].append(current.metadata["chunk_id"])
 
         return processed_chunks
-
 #==========================================================================================
 
     def num_tokens_from_string(self, string: str, encoding_name: str) -> int:
@@ -382,7 +463,7 @@ class DBConstructor(RAGProcessor):
         splitter = RecursiveCharacterTextSplitter(
             separators=['\n\n', '\n'],
             chunk_size=chunk_size,
-            chunk_overlap=6
+            chunk_overlap=30
         )
 
         self.source_chunks = splitter.split_text(text)

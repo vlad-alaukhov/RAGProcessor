@@ -5,7 +5,7 @@ from rag_processor import *
 import textwrap
 
 constructor = DBConstructor()
-constructor.chunk_size = 600
+constructor.chunk_size = 800
 
 
 root_folder = "/home/home/Projects/Uraltest_beta"
@@ -30,38 +30,47 @@ for doc_folder in doc_folders:
 
         parsed_chunks = constructor.document_parser(doc_file)
 
-        # pprint(parsed_chunks)
-        prepared_chunks = constructor.prepare_chunks(parsed_chunks, doc_file)
+        seps = [
+            r'^\d+\.*',
+            r'\n+',
+            r'(?<=[;])',
+            r'(?<=\.\s)',
+        ]
 
-        with open(chunk_file, "a", encoding="utf-8") as file:
+        params = {
+            'separators': seps,
+            'is_separator_regex': True,
+            'chunk_overlap': 0
+        }
+        prepared_chunks = constructor.prepare_chunks(parsed_chunks, doc_file, **params)
+
+        with open(chunk_file, "w", encoding="utf-8") as file:
             for chunk in prepared_chunks:
                 file.write(f"Контент:\n{chunk.page_content}\n---\nМетаданные: {chunk.metadata}\n=====================\n")
            # file.write(f"Нарушены связи: {constructor.validate_chunks(parsed_chunks)}\n=============\n")
 
-        # text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
-        # table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
-        #
-        # # 2. Векторизация текстов (с нормализацией)
-        # tx_ok, tx_msg = constructor.vectorizator(
-        #     docs=text_chunks,
-        #     db_folder=os.path.join(out_path, "text_db"),
-        #     model_name="ai-forever/sbert_large_nlu_ru",
-        #     model_type="huggingface",
-        #     encode_kwargs={"normalize_embeddings": True}  # Для текстов
-        # )
-        #
-        # print(tx_ok, tx_msg)
-        #
-        # tb_ok, tb_msg = constructor.vectorizator(
-        #     docs=table_chunks,
-        #     db_folder=os.path.join(out_path, "table_db"),
-        #     model_name="deepset/all-mpnet-base-v2-table",
-        #     model_type="huggingface",
-        #     encode_kwargs={"normalize_embeddings": False}  # Для таблиц
-        # )
-        #
-        # print(tb_ok, tb_msg)
-        # print("===================================")
+        text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
+        table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
+
+        # 2. Векторизация текстов (с нормализацией)
+        tx_ok, tx_msg = constructor.vectorizator(
+            docs=text_chunks,
+            db_folder=os.path.join(out_path, "text_db"),
+            model_name="ai-forever/sbert_large_nlu_ru",
+            model_type="huggingface", # encode_kwargs={"normalize_embeddings": True} Для текстов
+        )
+
+        print(tx_ok, tx_msg)
+
+        tb_ok, tb_msg = constructor.vectorizator(
+            docs=table_chunks,
+            db_folder=os.path.join(out_path, "table_db"),
+            model_name="deepset/all-mpnet-base-v2-table",
+            model_type="huggingface", # encode_kwargs={"normalize_embeddings": False} Для таблиц
+        )
+
+        print(tb_ok, tb_msg)
+        print("===================================")
 
 
 

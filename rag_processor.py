@@ -1,6 +1,8 @@
 import json
 import shutil
 from abc import ABC
+from pprint import pprint
+
 import fitz
 import numpy as np
 from camelot import read_pdf
@@ -348,14 +350,14 @@ class DBConstructor(RAGProcessor):
                 return chunk.metadata["linked"]
         return None
 
-    def prepare_chunks(self, dry_chunks: list, file_path: str) -> List[LangDoc]:
+    def prepare_chunks(self, dry_chunks: list, file_path: str, **params) -> List[LangDoc]:
         processed = []
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
         last_text_chunk = None  # Для хранения последнего текстового чанка перед таблицей
 
         for chunk in dry_chunks:
             # Разбиваем на подчанки с сохранением типа
-            sub_chunks = self._split_into_subchunks(chunk)
+            sub_chunks = self._split_into_subchunks(chunk, **params)
             is_table_group = chunk.metadata["element_type"] == "table"
 
             for i, sub in enumerate(sub_chunks):
@@ -405,24 +407,26 @@ class DBConstructor(RAGProcessor):
 
         return processed
 
-    def _split_into_subchunks(self, chunk: LangDoc) -> list:
+    def _split_into_subchunks(self, chunk: LangDoc, **params) -> list:
         """Разбивает чанк с пометкой преамбулы"""
+
+        # Обработка текста
         if chunk.metadata["element_type"] != "table":
             return [{"content": p, "is_preamble": False}
-                    for p in self.split_text_recursive(chunk.page_content, round(self.chunk_size * 1.1))]
+                    for p in self.split_text_recursive(chunk.page_content, self.chunk_size, **params)]
 
         parts = []
         preamble, sep, table = chunk.page_content.partition('\n|')
 
         # Обработка преамбулы
         if preamble.strip():
-            text_parts = self.split_text_recursive(preamble, self.chunk_size)
+            text_parts = self.split_text_recursive(preamble, self.chunk_size, **params)
             parts.extend([{"content": p, "is_preamble": True} for p in text_parts])
 
         # Обработка таблицы
         if table.strip():
             table_content = f"|{table}" if not table.startswith('|') else table
-            table_parts = self.split_text_recursive(table_content, int(self.chunk_size // 1.1), 30)
+            table_parts = self.split_text_recursive(table_content, self.chunk_size, **params)
             parts.extend([{"content": p, "is_preamble": False} for p in table_parts])
 
         return parts
@@ -435,10 +439,45 @@ class DBConstructor(RAGProcessor):
         self.num_tokens = len(encoding.encode(string))
         return self.num_tokens
 
-    def split_text_recursive(self, text: str, chunk_size: int, overlap=0):
+    def split_text_recursive(
+            self,
+            text: str,
+            chunk_size: int,
+            **params  # Принимаем все дополнительные параметры
+    ) -> List[str]:
+        """
+        Делит текст на чанки с поддержкой параметров через **params
+
+        Параметры через **params:
+            separators: List[str] = ['\n\n', '\n', ' ', '']
+            is_separator_regex: bool = False
+            chunk_overlap: int = 0
+            Другие параметры RecursiveCharacterTextSplitter
+        """
+        # Устанавливаем значения по умолчанию
+        default_params = {
+            'separators': ['\n\n', '\n', ' ', ''],
+            'is_separator_regex': False,
+            'chunk_overlap': 0
+        }
+
+        # Объединяем переданные параметры с дефолтными (переданные имеют приоритет)
+        final_params = {**default_params, **params}
+
+        # Создаем сплиттер с объединенными параметрами
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            **final_params  # Распаковываем все параметры
+        )
+
+        self.source_chunks = splitter.split_text(text)
+        return self.source_chunks
+
+    def simple_split_text_recursive(self, text: str, chunk_size: int, overlap=0):
         """
         Делит текст в строковой переменной text методом RecursiveCharacterTextSplitter
         на чанки размером chunk_size
+        :param overlap:
         :param text: Текст в строке. Чтобы дополнительно разделить langchain-документ, надо подавать page_content
         :param chunk_size: Размер чанка.
         :return: Список чанков типа str
@@ -598,7 +637,7 @@ class DBConstructor(RAGProcessor):
                 # Принудительная нормализация и префиксы
                 encode_kwargs.update({
                     'normalize_embeddings': True,
-                    'batch_size': 64,
+                    'batch_size': 32,
                     'convert_to_numpy': True
                 })
                 # Добавляем префиксы к текстам
@@ -619,6 +658,7 @@ class DBConstructor(RAGProcessor):
                     model_kwargs=model_kwargs,
                     encode_kwargs=encode_kwargs
                 )
+
                 distance_strategy = "COSINE" if encode_kwargs.get('normalize_embeddings', False) else "L2"
             else:
                 return False, f"Неподдерживаемый тип модели: {model_type}"
@@ -1002,15 +1042,17 @@ class DBConstructor(RAGProcessor):
 # ==================================================================================================
 # Поиск
 
-    def mmr_search(
+    def hybrid_mmr_search(
             self,
             query: str,
             db_result: Dict[str, Any],
             k: int = 5,
             lambda_mult: float = 0.5,
             **kwargs
-    ) -> List[LangDoc]:
+    ): # -> List[LangDoc]:
         """Аналог mmr_search для предзагруженных баз"""
+
+        result = {"texts": [], "tables": []}
         if not db_result.get("text_db") and not db_result.get("table_db"):
             raise ValueError("Нет данных для поиска")
 
@@ -1019,31 +1061,67 @@ class DBConstructor(RAGProcessor):
             text_results = db_result["text_db"].max_marginal_relevance_search(
                 query, k=k, lambda_mult=lambda_mult, **kwargs
             )
+            result["texts"] = [{
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            } for doc in text_results]
+
 
         table_results = []
         if db_result["table_db"]:
             table_results = db_result["table_db"].max_marginal_relevance_search(
                 query, k=k, lambda_mult=lambda_mult, **kwargs
             )
+            result["tables"] = [{
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            } for doc in table_results]
 
-        return self._process_search_results(text_results, table_results, db_result, k)
+        return result # self._process_search_results(text_results, table_results, db_result, k)
 
-    def sim_search_with_scores(
-            self,
-            query: str,
-            db_result: Dict[str, Any],
-            k: int = 5,
-            **kwargs
-    ) -> Dict[str, List[Dict[str, Any]]]:
+    def hybrid_sim_search(self,
+                                 query: str,
+                                 db_result: Dict[str, Any],
+                                 k: int = 5,
+                                 **kwargs): # -> Dict[str, List[Dict[str, Any]]]:
+
+        result = {"texts": [], "tables": []}
+        if not db_result.get("text_db") and not db_result.get("table_db"):
+            raise ValueError("Нет данных для поиска")
+
+        text_results = []
+        if db_result["text_db"]:
+            text_results = db_result["text_db"].similarity_search(query, k=k, **kwargs)
+            result["texts"] = [{
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            } for doc in text_results]
+
+        table_results = []
+        if db_result["table_db"]:
+            table_results = db_result["table_db"].similarity_search(query, k=k, **kwargs)
+            result["tables"] = [{
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            } for doc in table_results]
+
+        return result  # self._process_search_results(text_results, table_results, db_result, k)
+
+    def hybrid_search_with_scores(self,
+                                 query: str,
+                                 db_result: Dict[str, Any],
+                                 k: int = 5,
+                                 **kwargs): # -> Dict[str, List[Dict[str, Any]]]:
+
         """Поиск с оценкой релевантности. Возвращает топ-3 текста и таблицы."""
         result = {"texts": [], "tables": []}
 
         try:
             # Поиск в текстовой базе
             if db_result.get("text_db"):
-                text_results = db_result["text_db"].similarity_search_with_score(query, k=k, **kwargs)
+                text_results = db_result["text_db"].similarity_search_with_relevance_scores(query, k=k, **kwargs)
                 # Сортировка и выбор топ-3
-                sorted_texts = sorted(text_results, key=lambda x: x[1], reverse=True)[:3]
+                sorted_texts = sorted(text_results, key=lambda x: x[1], reverse=True)
                 result["texts"] = [{
                     "content": doc.page_content,
                     "score": round(score, 6),
@@ -1054,12 +1132,60 @@ class DBConstructor(RAGProcessor):
             if db_result.get("table_db"):
                 table_results = db_result["table_db"].similarity_search_with_score(query, k=k, **kwargs)
                 # Сортировка и выбор топ-3
-                sorted_tables = sorted(table_results, key=lambda x: x[1], reverse=False)[:3]
+                sorted_tables = sorted(table_results, key=lambda x: x[1], reverse=False)
                 result["tables"] = [{
                     "content": doc.page_content,
                     "score": round(score, 6),
                     "metadata": doc.metadata
                 } for doc, score in sorted_tables]
+
+        except Exception as e:
+            print(f"Ошибка поиска: {str(e)}")
+
+        return result
+
+    def hybrid_sim_search_score_by_vector(self,
+                                 query: str,
+                                 db_result: Dict[str, Any],
+                                 k: int = 5,
+                                 **kwargs): # -> Dict[str, List[Dict[str, Any]]]:
+
+        """Поиск с оценкой релевантности. Возвращает топ-3 текста и таблицы."""
+        result = {"texts": [], "tables": []}
+
+        embs_txt = HuggingFaceEmbeddings(
+            model_name="ai-forever/sbert_large_nlu_ru",
+            encode_kwargs={"normalize_embeddings": True}
+        )
+
+        embs_tab = HuggingFaceEmbeddings(
+            model_name="deepset/all-mpnet-base-v2-table",
+            encode_kwargs={"normalize_embeddings": False}
+        )
+
+        query_txt = embs_txt.embed_query(query)
+        query_tab = embs_tab.embed_query(query)
+
+        try:
+            # Поиск в текстовой базе
+            if db_result.get("text_db"):
+                text_results = db_result["text_db"].similarity_search_with_score_by_vector(query_txt, k=k)
+
+                result["texts"] = [{
+                    "content": doc.page_content,
+                    "score": round(score, 6),
+                    "metadata": doc.metadata
+                } for doc, score in text_results]
+
+            # Поиск в табличной базе
+            if db_result.get("table_db"):
+                table_results = db_result["table_db"].similarity_search_with_score_by_vector(query_tab, k=k)
+
+                result["tables"] = [{
+                    "content": doc.page_content,
+                    "score": round(score, 6),
+                    "metadata": doc.metadata
+                } for doc, score in table_results]
 
         except Exception as e:
             print(f"Ошибка поиска: {str(e)}")

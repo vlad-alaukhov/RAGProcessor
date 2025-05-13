@@ -13,7 +13,7 @@ root_folder = "/home/home/Projects/Uraltest_beta"
 doc_folders = [os.path.join(root_folder, name) for name in os.listdir(root_folder)]
 
 for doc_folder in doc_folders:
-    doc_names = os.listdir(doc_folder) # [os.path.join(folder, name) for name in os.listdir(folder)]
+    doc_names = os.listdir(doc_folder)
     for doc_name in doc_names:
         cut_name = doc_name.split('.')[-2]
         out_path = f"{os.getcwd()}/FAISS/{os.path.basename(doc_folder)}/{cut_name}" # Папка, в которую сохранится FAISS: Текущая/FAISS/Имя_файла_документа(Без ".docx")
@@ -33,7 +33,8 @@ for doc_folder in doc_folders:
         seps = [
             r'^\d+\.*',
             r'\n+',
-            r'(?<=[;])',
+            r'(?<=\.)\s*\n',
+            r'(?<=[;]\n)',
             r'(?<=\.\s)',
         ]
 
@@ -49,27 +50,18 @@ for doc_folder in doc_folders:
                 file.write(f"Контент:\n{chunk.page_content}\n---\nМетаданные: {chunk.metadata}\n=====================\n")
            # file.write(f"Нарушены связи: {constructor.validate_chunks(parsed_chunks)}\n=============\n")
 
-        text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
-        table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
+        # text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
+        # table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
 
         # 2. Векторизация текстов (с нормализацией)
-        tx_ok, tx_msg = constructor.vectorizator(
-            docs=text_chunks,
-            db_folder=os.path.join(out_path, "text_db"),
-            model_name="ai-forever/sbert_large_nlu_ru",
+        ok, msg = constructor.vectorizator(
+            docs=prepared_chunks,
+            db_folder=os.path.join(out_path),
+            model_name="intfloat/E5-large-v2",
             model_type="huggingface", # encode_kwargs={"normalize_embeddings": True} Для текстов
         )
 
-        print(tx_ok, tx_msg)
-
-        tb_ok, tb_msg = constructor.vectorizator(
-            docs=table_chunks,
-            db_folder=os.path.join(out_path, "table_db"),
-            model_name="deepset/all-mpnet-base-v2-table",
-            model_type="huggingface", # encode_kwargs={"normalize_embeddings": False} Для таблиц
-        )
-
-        print(tb_ok, tb_msg)
+        print(ok, msg)
         print("===================================")
 
 

@@ -33,15 +33,81 @@ class RAG(ABC):
         os.environ.clear()
         load_dotenv(".venv/.env")
         # получим переменные окружения из .env
-        self.api_url = os.environ.get("OPENAI_URL")
+        self.api_url=None # = os.environ.get("OPENAI_URL", None)
         # API-key
-        self.api_key = os.environ.get("OPENAI_API_KEY")
+        self.api_key=None # = os.environ.get("OPENAI_API_KEY", None)
         # HF-токен
-        self.hf = os.environ.get("HF-TOKEN")
+        self.hf=None # = os.environ.get("HF-TOKEN", None)
+        self.access_token=None
+        self.ssl=None
 
 class RAGProcessor(RAG):
     def __init__(self):
         super().__init__()
+
+    def request_to_gigachat(self,
+                            prompts: List[Dict[str, Any]],
+                            verbose=False,
+                            **kwargs
+                            ):
+
+        attempts = 0
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        model = kwargs.get("model", "giga-pro")
+
+
+        payload = {
+            "model": model,
+            "messages": prompts,
+            "temperature": kwargs.get("temperature", 0),
+            **({"max_tokens": kwargs["max_tokens"]} if "max_tokens" in kwargs else {})
+        }
+
+        if verbose:
+            print("===============================================")
+            print("model: ", model)
+            print("-----------------------------------------------")
+            print("system: ")
+            pprint(prompts)
+            print("-----------------------------------------------")
+
+        response = None
+        while attempts < 3:
+            try:
+                response = requests.post(self.api_url, headers=headers, json=payload, verify=self.ssl)
+                response.raise_for_status()  # Проверка статуса HTTP
+                result_text = response.json()["choices"][0]["message"]["content"]
+                if verbose: print("Ответ модели: ", result_text)
+                return True, result_text
+
+            except requests.exceptions.HTTPError as http_err:
+                if response.status_code == 401:
+                    print("Ошибка авторизации: Получаем API-token.")
+                    url = "https://gigachat.devices.sberbank.ru/api/v2/oauth"
+                    payload = {
+                        "client_id": "24c1238f-6318-4cca-b528-5417bc24e59a",
+                        "client_secret": "0e30cc28-3fbb-4dbc-8361-509432fd59ad"
+                    }
+                    try:
+                        response = requests.post(url, json=payload, verify=self.ssl)
+                        response.raise_for_status()
+                        self.access_token = response.json()["access_token"]
+                    except requests.exceptions.HTTPError as http_err1:
+                        print(f"Ошибка ключа: {http_err1}")
+                    attempts += 1
+                else:
+                    print(f"Ошибка HTTP: {http_err}")
+
+            except Exception as e:
+                attempts += 1
+                result = e
+        return False, f"Ошибка генерации"
+
+
 
     def request_to_openai(self, system: str, request: str, temper: float, model="openai/gpt-4o-mini", verbose=False):
         attempts = 1
@@ -86,6 +152,7 @@ class RAGProcessor(RAG):
                 print(e)
                 attempts += 1
                 if attempts >= 3: return False, f"Ошибка генерации: {e}"
+        return False, f"Ошибка генерации"
 
 
 class DBConstructor(RAGProcessor):
@@ -212,8 +279,9 @@ class DBConstructor(RAGProcessor):
 
             # Обработка таблиц
             elif elem_type == 'tbl':
-                md_table = self._table_to_markdown(elem)
-                current_chunk.append(md_table)
+                # md_table = self._table_to_markdown(elem)
+                t_table = self._table_to_text(elem)
+                current_chunk.append(t_table)
                 in_table_group = True
 
         # Добавляем последний чанк
@@ -257,6 +325,14 @@ class DBConstructor(RAGProcessor):
             if i == 0:
                 markdown.append("| " + " | ".join(["---"] * len(cells)) + " |")
         return '\n'.join(markdown)
+
+    def _table_to_text(self, table):
+        """Преобразовывает таблицу в текст с разделением полей табуляцией (\t)"""
+        rows = []
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            rows.append("\t".join(cells))
+        return "\n".join(rows)
 # -------------------------------------------------------
 
     def _parse_pdf(self, file_path: str) -> list:
@@ -350,7 +426,7 @@ class DBConstructor(RAGProcessor):
                 return chunk.metadata["linked"]
         return None
 
-    def prepare_chunks(self, dry_chunks: list, file_path: str, **params) -> List[LangDoc]:
+    '''def prepare_chunks(self, dry_chunks: list, file_path: str, **params) -> List[LangDoc]:
         processed = []
         doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
         last_text_chunk = None  # Для хранения последнего текстового чанка перед таблицей
@@ -401,6 +477,51 @@ class DBConstructor(RAGProcessor):
                 processed.append(new_chunk)
 
         # Фильтрация битых ссылок
+        valid_ids = {c.metadata["chunk_id"] for c in processed}
+        for chunk in processed:
+            chunk.metadata["linked"] = [x for x in chunk.metadata["linked"] if x in valid_ids]
+
+        return processed'''
+
+    def prepare_chunks(self, dry_chunks: list, file_path: str, **params) -> List[LangDoc]:
+        processed = []
+        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        last_text_chunk = None  # Хранение последней текстовой порции
+
+        for chunk in dry_chunks:
+            # Разделение чанков с учётом типа элемента
+            sub_chunks = self.split_text_recursive(chunk.page_content, self.chunk_size, **params)
+            is_table_group = chunk.metadata["element_type"] == "table"
+
+            for i, sub in enumerate(sub_chunks):
+                # Определение типа и префикса чанка
+                chunk_type = "table" if is_table_group else "text"
+
+                # Генерируем уникальный идентификатор
+                prefix = "tbl" if chunk_type == "table" else "p"
+                chunk_id = f"{doc_id}_{prefix}_{len(processed)}"
+
+                # Создаем связи между чанками
+                linked = []
+                if i > 0:
+                    linked.append(processed[-1].metadata["chunk_id"])  # Предыдущий кусок
+                if i < len(sub_chunks) - 1:
+                    linked.append(f"{doc_id}_{prefix}_{len(processed) + 1}")  # Следующий кусок
+
+                # Новый чанк
+                new_chunk = LangDoc(
+                    page_content=sub,
+                    metadata={
+                        "doc_id": doc_id,
+                        "chunk_id": chunk_id,
+                        "element_type": chunk_type,
+                        "linked": list(set(linked)),  # Удаляем повторяющиеся ссылки
+                        "_title": chunk.metadata["_title"]
+                    }
+                )
+                processed.append(new_chunk)
+
+        # Чистим ссылки, удаляя недействительные
         valid_ids = {c.metadata["chunk_id"] for c in processed}
         for chunk in processed:
             chunk.metadata["linked"] = [x for x in chunk.metadata["linked"] if x in valid_ids]
@@ -714,61 +835,6 @@ class DBConstructor(RAGProcessor):
             print(f"Ошибка определения размерности: {str(e)}")
         return "unknown"
 
-    def hybrid_vectorizator(
-            self,
-            docs: List[LangDoc],
-            db_folder: str,
-            text_model: str = "sergeyzh/LaBSE-ru-turbo",
-            table_model: str = "deepset/all-mpnet-base-v2-table",
-            **kwargs
-    ) -> tuple:
-        """Векторизация с разделением текста и таблиц. Не изменяет старый vectorizator."""
-        try:
-            # Разделяем чанки
-            text_chunks = [d for d in docs if d.metadata.get("element_type") != "table"]
-            table_chunks = [d for d in docs if d.metadata.get("element_type") == "table"]
-
-            # Создаем подпапки для текстов и таблиц
-            text_db_path = os.path.join(db_folder, "text_db")
-            table_db_path = os.path.join(db_folder, "table_db")
-            os.makedirs(text_db_path, exist_ok=True)
-            os.makedirs(table_db_path, exist_ok=True)
-
-            # Векторизация текстов (используем СТАРЫЙ vectorizator)
-            if text_chunks:
-                success, msg = self.vectorizator(
-                    docs=text_chunks,
-                    db_folder=text_db_path,
-                    model_name=text_model,
-                    model_type="huggingface",
-                    **kwargs
-                )
-                if not success:
-                    return False, f"Ошибка текстовой базы: {msg}"
-
-            # Векторизация таблиц (используем СТАРЫЙ vectorizator)
-            if table_chunks:
-                success, msg = self.vectorizator(
-                    docs=table_chunks,
-                    db_folder=table_db_path,
-                    model_name=table_model,
-                    model_type="huggingface",
-                    **kwargs
-                )
-                if not success:
-                    return False, f"Ошибка табличной базы: {msg}"
-
-            # Копируем метаданные из text_db в корень для совместимости
-            if os.path.exists(os.path.join(text_db_path, "metadata.json")):
-                shutil.copy(
-                    os.path.join(text_db_path, "metadata.json"),
-                    os.path.join(db_folder, "metadata.json")
-                )
-
-            return True, f"Гибридные базы сохранены в {db_folder}"
-        except Exception as e:
-            return False, f"Критическая ошибка: {str(e)}"
-
     #=======================================================================
     # Загрузка базы
 
@@ -1042,6 +1108,8 @@ class DBConstructor(RAGProcessor):
 # ==================================================================================================
 # Поиск
 
+
+
     def hybrid_mmr_search(
             self,
             query: str,
@@ -1105,7 +1173,7 @@ class DBConstructor(RAGProcessor):
                 "metadata": doc.metadata
             } for doc in table_results]
 
-        return result  # self._process_search_results(text_results, table_results, db_result, k)
+        return result # self._process_search_results(text_results, table_results, db_result, k)
 
     def hybrid_search_with_scores(self,
                                  query: str,

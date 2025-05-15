@@ -20,13 +20,18 @@ import tiktoken
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
+from langchain_core.embeddings import Embeddings
+
+import functools
+import asyncio
+from sentence_transformers import SentenceTransformer
+
 import re                 # работа с регулярными выражениями
 import requests
 from dotenv import load_dotenv
 import time
 # from langchain_huggingface import HuggingFaceEmbeddings
 from typing import List, Any, Dict, Generator, Optional, Tuple
-from langchain_core.embeddings import Embeddings
 
 class RAG(ABC):
     def __init__(self):
@@ -154,11 +159,22 @@ class RAGProcessor(RAG):
                 if attempts >= 3: return False, f"Ошибка генерации: {e}"
         return False, f"Ошибка генерации"
 
+class EmbeddingsNotInitialized(Exception):
+    """Исключение, сигнализирующее о том, что модель эмбеддингов не была инициализирована."""
+
+    def __init__(self, message="Модель эмбеддингов не была инициализирована. Используйте метод set_embeddings."):
+        super().__init__(message)
+
+class MetaCompatibilityError(Exception):
+    """Исключение, сигнализирующее о том, что метаданные несовместимы."""
+
+    def __init__(self, message="Метаданные несовместимы."):
+        super().__init__(message)
 
 class DBConstructor(RAGProcessor):
-    def __init__(self):
+    def __init__(self, embeddings=None):
         super().__init__()
-        self.embeddings = None
+        self.embeddings = embeddings
         self.db_metadata = None
         self.chunk_size = 700
         self.source_chunks = None
@@ -168,6 +184,16 @@ class DBConstructor(RAGProcessor):
         self.answer = None
         self.unprocessed_text = None
         self.processed_text = None
+
+    def async_wrapper(func):
+        """
+        Декоратор для асинхронного исполнения синхронных методов.
+        """
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            return await asyncio.to_thread(func, *args, **kwargs)
+
+        return wrapper
 
     @staticmethod
     def pdf_parser(files: str | list):
@@ -758,7 +784,7 @@ class DBConstructor(RAGProcessor):
                 # Принудительная нормализация и префиксы
                 encode_kwargs.update({
                     'normalize_embeddings': True,
-                    'batch_size': 32,
+                    'batch_size': 64,
                     'convert_to_numpy': True
                 })
                 # Добавляем префиксы к текстам
@@ -875,52 +901,103 @@ class DBConstructor(RAGProcessor):
             result["error"] = str(e)
             return result
 
-    def _single_faiss_loader(self, db_folder: str) -> Dict[str, Any]:
+    def set_embeddings(self, db_folder: str, verbose: bool = False):
         """
-        Возвращает словарь с ключами:
-        - success: bool - флаг успеха операции
-        - db: Optional[FAISS] - объект базы (при успехе)
-        - is_e5: bool - флаг использования E5 (при успехе)
-        - error: str - сообщение об ошибке (при неудаче)
+        Загружает модель эмбеддингов и проверяет метаданные.
+        :param db_folder: Путь к папке с базой
+        :param verbose: Распечатка разультатов при отладке
+        :return: Словарь с результатами
+        """
+        result = {
+            "success": False,
+            "is_e5_model": False,
+            "result": {}
+        }
+
+        current_meta = {}
+
+        try:
+            # 1. Проверка существования папки
+            if not os.path.isdir(db_folder):
+                raise FileNotFoundError(f"Папка {db_folder} не существует")
+
+            # 2. Загрузка метаданных
+            meta_folders = [dir for dir, _, files in os.walk(db_folder) if files]
+
+            if verbose:
+                for each in meta_folders: print(each)
+
+            meta_code, main_meta = self._load_metadata(meta_folders[0])
+            if not main_meta: raise ValueError("Метаданные базы загружены неверно или их не существует")
+
+            for meta_folder in meta_folders[1:]:
+                meta_code, current_meta = self._load_metadata(meta_folder)
+                if not main_meta: raise ValueError("Метаданные базы загружены неверно или их не существует")
+                if not self._check_compatibility(main_meta, current_meta):
+                    raise MetaCompatibilityError()
+
+            load_meta = f"_load_metadata: {meta_code}"
+            result["is_e5_model"] = current_meta.get("is_e5_model", False)
+
+            # 3. Загрузка эмбеддингов
+            embs_code, self.embeddings = self._load_embeddings(current_meta)
+            load_embs = f"_load_embeddings: {embs_code}."
+            if self.embeddings is None: raise EmbeddingsNotInitialized("Модель эмбеддингов не загружена")
+
+            result["result"].update({"loaded": [load_meta, load_embs], "metadata": current_meta})
+
+            result["success"] = True
+
+        except Exception as e:
+            result["result"].update({"Error": f"Ошибка. {str(e)}"})
+
+        if verbose:
+            pprint(result, sort_dicts=False)
+        return result
+
+    def _single_faiss_loader(self, db_folder: str, verbose: bool = False) -> Dict[str, Any]:
+        """
+        Загружает FAISS-индекс.
+        :param db_folder: Путь к папке с базой
+        :return: Словарь с результатами
         """
         result = {
             "success": False,
             "db": Optional[FAISS] | None,
-            "is_e5_model": False,
             "error": ""
         }
 
         try:
             # 1. Проверка существования папки
-            if not os.path.isdir(db_folder): raise FileNotFoundError(f"Папка {db_folder} не существует")
+            if not os.path.isdir(db_folder):
+                raise FileNotFoundError(f"Папка {db_folder} не существует")
 
-            # 2. Загрузка метаданных
-            code, metadata = self._load_metadata(db_folder)
-            if metadata is None: raise ValueError("Невалидные метаданные базы")
-
-            result["is_e5_model"] = metadata.get("is_e5_model", False)
-
-            # 3. Проверка файлов FAISS
+            # 2. Проверка файлов FAISS
             required_files = ["index.faiss", "index.pkl"]
             missing = [f for f in required_files if not os.path.exists(os.path.join(db_folder, f))]
-            if missing: raise FileNotFoundError(f"Отсутствуют файлы: {missing}")
+            if missing:
+                raise FileNotFoundError(f"Отсутствуют файлы: {missing}")
 
-            # 4. Загрузка эмбеддингов
-            res, embeddings = self._load_embeddings(metadata)
-            if embeddings is None: raise RuntimeError("Ошибка загрузки модели эмбеддингов")
+            # Проверка эмбеддингов
+            if self.embeddings is None: raise EmbeddingsNotInitialized()
 
-            # 5. Основная загрузка
+            # 3. Основная загрузка
             result["db"] = FAISS.load_local(
                 db_folder,
-                embeddings,
+                embeddings=self.embeddings,  # Используем глобальную модель эмбеддингов
                 allow_dangerous_deserialization=True
             )
 
             result["success"] = True
+            if verbose:
+                print(f"_single_faiss_loader: {db_folder}")
+                pprint(result)
             return result
 
         except Exception as e:
-            result["error"] = f"{type(e).__name__}: {str(e)}"
+            result["error"] = str(e)
+            if verbose:
+                print(f"Ошибка _single_faiss_loader: {db_folder}\n{result['error']}")
             return result
 
 
@@ -1107,9 +1184,6 @@ class DBConstructor(RAGProcessor):
 
 # ==================================================================================================
 # Поиск
-
-
-
     def hybrid_mmr_search(
             self,
             query: str,
@@ -1259,6 +1333,69 @@ class DBConstructor(RAGProcessor):
             print(f"Ошибка поиска: {str(e)}")
 
         return result
+
+    @staticmethod
+    def formatted_scored_sim_search_by_cos(index: Optional[FAISS], query: str, **search_args) -> list:
+        """
+        Cинхронный поиск на базе similarity_search_with_relevance_scores.
+        :param index: FAISS-индекс из langchain
+        :param query: Запрос (вектор)
+        :param k:
+        :return: список словарей с результатами поиска
+        """
+        k = search_args.pop("k", 4)
+        kwargs = search_args.copy()
+        # Стандартный поиск по совпадению на основе косинусных расстояний который возвращает
+        results = index.similarity_search_with_relevance_scores(query, k=k, **kwargs)
+        # Преобразуем результаты в требуемый формат
+        formatted_results = []
+        for doc, score in results:
+            formatted_results.append({
+                "content": doc.page_content,
+                "score": round(float(score), 6),
+                "metadata": doc.metadata
+            })
+        return formatted_results
+
+    # --------------------------------------------------
+    # Асинхронный поиск
+
+    @async_wrapper
+    def aformatted_scored_sim_search_by_cos(self, index: Optional[FAISS], query: str, **search_args) -> list:
+        """Преобразование методы в асинхронный"""
+        return self.formatted_scored_sim_search_by_cos(index, query, **search_args)
+
+    @staticmethod
+    async def _multi_async_search(query: str, indexes: List[Optional[FAISS]], search_function, **search_args) -> list:
+        """
+        Асинхронный поиск по нескольким индексам с одним запросом.
+        :param query: Запрос (вектор)
+        :param indexes: Список FAISS-индексов
+        :return: список словарей с результатами поиска
+        """
+        tasks = [asyncio.create_task(search_function(index, query, **search_args)) for index in indexes]
+        results = await asyncio.gather(*tasks)
+        flattened_results = [item for sublist in results for item in sublist]
+        return flattened_results
+
+    def process_query(self, query: str, indexes: List[Optional[FAISS]], search_function, **search_args) -> list:
+        """
+        Главный метод для обработки запроса.
+        :param query: Текстовый запрос
+        :param indexes: FAISS-индексы
+        :param search_function: Функция поиска из методов модуля
+        :return: результаты поиска
+        """
+
+        # Асинхронный поиск
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        results = loop.run_until_complete(self._multi_async_search(query, indexes, search_function, **search_args))
+        loop.close()
+
+        # Сортировка и выбор лучших результатов
+        sorted_results = sorted(results, key=lambda x: x['score'], reverse=True)
+        return sorted_results
 
     def _process_search_results(self,
                                 text_results: List[LangDoc],

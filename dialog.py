@@ -33,7 +33,7 @@ def search_and_collect(dialog, questions, faiss_folder):
 
     for idx, query in enumerate(questions):
         # Выполняем поиск по каждому вопросу
-        output = db_faiss["db"].similarity_search_with_relevance_scores(f"query: {query}", k=5)
+        output = db_faiss["db"].similarity_search_with_relevance_scores(f"query: {query}", k=5, )
         result_list = [{
             "question": query,
             "content": doc.page_content,
@@ -48,20 +48,44 @@ def search_and_collect(dialog, questions, faiss_folder):
 # 3. Основной сценарий
 if __name__ == "__main__":
     dialog = DBConstructor()
-    faiss_folder = "/home/home/Projects/RAGProcessor/FAISS/РАБОЧИЕ_ПОРЯДКИ_ОБЩИЕ/_ПР-15-2023_учета_оборудования_и_его_состояния"
+    root = "/home/home/Projects/RAGProcessor/FAISS/РАБОЧИЕ_ПОРЯДКИ_ОБЩИЕ"
 
-    # Собираем результаты поиска
-    search_results = search_and_collect(dialog, questions, faiss_folder)
+    queries = ["Как составить учетную форму для средств измерений (СИ)? Какие сведения должны содержаться в учетной форме для СИ в ПО Метрология?",
+             "Как составить учетную форму для вспомогательного оборудования (ВО)? Какие сведения должны содержаться в учетной форме для ВО?"]
 
-    # Выводим результаты поиска в формате JSON
-    json_output = json.dumps(search_results, ensure_ascii=False, indent=4)
-    print(json_output)
+    # Папки с индексами без имён файлов, проверенные на наличие и правильность
+    index_dirs = [d for d, _, files in os.walk(root) for file in files if file.endswith(".faiss")]
 
-    # Также можно записать в файл
-    with open("search_results.json", "w", encoding="utf-8") as f:
-        f.write(json_output)
+    # Один раз вызвали модель эмбеддингов
+    set_embs_result = dialog.set_embeddings(root, False)
 
+    # Если эмбеддинги загрузились, то выполняем всё
+    if set_embs_result["success"]:
+        faiss_load_results = [] # здесь будет список результатов загрузок баз
+        for db_folder in index_dirs:
+            faiss_load_results.append(dialog.faiss_loader(db_folder, False))
 
+        # Извлекаю список индексов по условию успешной загрузки
+        faiss_indexes = [faiss_load_result["db"] for faiss_load_result in faiss_load_results if faiss_load_result["success"]]
+
+        # Задаю префикс E5, если модель эмбеддингов E5 серии
+        query_prefix = "query: " if set_embs_result["is_e5_model"] else ""
+
+        # Прохожу по списку вопросов. В реале цикла не будет. Это тестовый проход
+        for idx, query in enumerate(queries):
+            print(query) # Вопрос
+            # Получаю разультат поиска по группе баз
+            results = dialog.process_query(query_prefix+query,
+                                           faiss_indexes,
+                                           dialog.aformatted_scored_sim_search_by_cos,
+                                           k=5)
+            for result in results[:3]: print(result["content"])
+            # Выводим результаты поиска в формате JSON
+            json_output = json.dumps(results, ensure_ascii=False, indent=4)
+
+            # Также можно записать в файл
+            with open(f"search_results_{idx}.json", "w", encoding="utf-8") as f:
+                f.write(json_output)
 
 
 

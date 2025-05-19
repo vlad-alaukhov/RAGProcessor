@@ -31,7 +31,8 @@ import requests
 from dotenv import load_dotenv
 import time
 # from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Any, Dict, Generator, Optional, Tuple
+from typing import List, Any, Dict, Generator, Optional, Tuple, Callable
+
 
 class RAG(ABC):
     def __init__(self):
@@ -185,13 +186,14 @@ class DBConstructor(RAGProcessor):
         self.unprocessed_text = None
         self.processed_text = None
 
-    def async_wrapper(func):
+    @staticmethod
+    def async_wrapper(method):
         """
         Декоратор для асинхронного исполнения синхронных методов.
         """
-        @functools.wraps(func)
+        @functools.wraps(method)
         async def wrapper(*args, **kwargs):
-            return await asyncio.to_thread(func, *args, **kwargs)
+            return await asyncio.to_thread(method, *args, **kwargs)
 
         return wrapper
 
@@ -272,6 +274,7 @@ class DBConstructor(RAGProcessor):
             elif elem.tag.endswith('tbl'):
                 elements.append(('tbl', DocxTable(elem, doc)))
 
+        table_head = ""
         # Обработка элементов
         for i, (elem_type, elem) in enumerate(elements):
             # Обработка текстовых параграфов
@@ -281,13 +284,7 @@ class DBConstructor(RAGProcessor):
 
                 # Начало новой табличной группы
                 if not is_empty and self._is_table_context(elements, i):
-                    if current_chunk:
-                        raw_chunks.append({
-                            "content": "\n".join(current_chunk),
-                            "type": "text",
-                            "_title": title
-                        })
-                    current_chunk = [text]
+                    table_head = text
                     in_table_group = True
                     continue
 
@@ -305,9 +302,13 @@ class DBConstructor(RAGProcessor):
 
             # Обработка таблиц
             elif elem_type == 'tbl':
-                # md_table = self._table_to_markdown(elem)
-                t_table = self._table_to_text(elem)
-                current_chunk.append(t_table)
+                t_head, t_tables = self._table_to_text(elem, table_head)
+                for t_table in t_tables:
+                    raw_chunks.append({
+                                "content": t_head + t_table,
+                                "type": "table",
+                                "_title": title
+                    })
                 in_table_group = True
 
         # Добавляем последний чанк
@@ -325,7 +326,8 @@ class DBConstructor(RAGProcessor):
                             "element_type": chunk["type"]
                         }) for chunk in raw_chunks]
 
-    def _is_table_context(self, elements, index):
+    @staticmethod
+    def _is_table_context(elements, index):
         """Проверяет, следует ли за параграфом таблица без пустой строки"""
         next_index = index + 1
         if next_index >= len(elements):
@@ -342,7 +344,8 @@ class DBConstructor(RAGProcessor):
                 return True
         return False
 
-    def _table_to_markdown(self, table):
+    @staticmethod
+    def _table_to_markdown(table):
         """Конвертирует таблицу в Markdown с сохранением границ"""
         markdown = []
         for i, row in enumerate(table.rows):
@@ -352,13 +355,15 @@ class DBConstructor(RAGProcessor):
                 markdown.append("| " + " | ".join(["---"] * len(cells)) + " |")
         return '\n'.join(markdown)
 
-    def _table_to_text(self, table):
+    @staticmethod
+    def _table_to_text(table, table_head):
         """Преобразовывает таблицу в текст с разделением полей табуляцией (\t)"""
         rows = []
         for row in table.rows:
             cells = [cell.text.strip() for cell in row.cells]
             rows.append("\t".join(cells))
-        return "\n".join(rows)
+        table_head += "\n" + rows[0] + "\n"
+        return table_head, rows[1:] # "\n".join(rows)
 # -------------------------------------------------------
 
     def _parse_pdf(self, file_path: str) -> list:
@@ -451,63 +456,6 @@ class DBConstructor(RAGProcessor):
             else:
                 return chunk.metadata["linked"]
         return None
-
-    '''def prepare_chunks(self, dry_chunks: list, file_path: str, **params) -> List[LangDoc]:
-        processed = []
-        doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
-        last_text_chunk = None  # Для хранения последнего текстового чанка перед таблицей
-
-        for chunk in dry_chunks:
-            # Разбиваем на подчанки с сохранением типа
-            sub_chunks = self._split_into_subchunks(chunk, **params)
-            is_table_group = chunk.metadata["element_type"] == "table"
-
-            for i, sub in enumerate(sub_chunks):
-                # Определяем тип и префикс
-                chunk_type = "table" if (is_table_group and not sub["is_preamble"]) else "text"
-                prefix = "tbl" if chunk_type == "table" else "p"
-                chunk_id = f"{doc_id}_{prefix}_{len(processed)}"
-
-                # Инициализация связей
-                linked = []
-
-                # 1. Связи внутри одного блока
-                if i > 0:
-                    linked.append(processed[-1].metadata["chunk_id"])  # Предыдущая часть
-                if i < len(sub_chunks) - 1:
-                    linked.append(f"{doc_id}_{prefix}_{len(processed) + 1}")  # Следующая часть
-
-                # 2. Специальная обработка табличных групп
-                if is_table_group:
-                    if sub["is_preamble"]:
-                        # Преамбула ссылается только на первую часть таблицы
-                        if i < len(sub_chunks) - 1:
-                            linked.append(f"{doc_id}_tbl_{len(processed) + 1}")
-                    else:
-                        # Таблица ссылается только на свою преамбулу (если есть)
-                        if i > 0 and sub_chunks[i - 1]["is_preamble"]:
-                            linked.append(f"{doc_id}_p_{len(processed) - 1}")
-
-                # Создаем чанк
-                new_chunk = LangDoc(
-                    page_content=sub["content"],
-                    metadata={
-                        "doc_id": doc_id,
-                        "chunk_id": chunk_id,
-                        "element_type": chunk_type,
-                        "linked": list(set(linked)),
-                        "_title": chunk.metadata["_title"]
-                    }
-                )
-
-                processed.append(new_chunk)
-
-        # Фильтрация битых ссылок
-        valid_ids = {c.metadata["chunk_id"] for c in processed}
-        for chunk in processed:
-            chunk.metadata["linked"] = [x for x in chunk.metadata["linked"] if x in valid_ids]
-
-        return processed'''
 
     def prepare_chunks(self, dry_chunks: list, file_path: str, **params) -> List[LangDoc]:
         processed = []
@@ -905,7 +853,7 @@ class DBConstructor(RAGProcessor):
         """
         Загружает модель эмбеддингов и проверяет метаданные.
         :param db_folder: Путь к папке с базой
-        :param verbose: Распечатка разультатов при отладке
+        :param verbose: Распечатка результатов при отладке
         :return: Словарь с результатами
         """
         result = {
@@ -1365,37 +1313,32 @@ class DBConstructor(RAGProcessor):
         """Преобразование методы в асинхронный"""
         return self.formatted_scored_sim_search_by_cos(index, query, **search_args)
 
-    @staticmethod
-    async def _multi_async_search(query: str, indexes: List[Optional[FAISS]], search_function, **search_args) -> list:
+
+    async def multi_async_search(
+            self,
+            query: str,
+            indexes: List[Optional[FAISS]],
+            search_function: Callable,
+            **search_args
+    ) -> list:
         """
         Асинхронный поиск по нескольким индексам с одним запросом.
         :param query: Запрос (вектор)
         :param indexes: Список FAISS-индексов
+        :param search_function: Асинхронная функция поиска
         :return: список словарей с результатами поиска
         """
-        tasks = [asyncio.create_task(search_function(index, query, **search_args)) for index in indexes]
-        results = await asyncio.gather(*tasks)
-        flattened_results = [item for sublist in results for item in sublist]
-        return flattened_results
+        tasks = [search_function(index, query, **search_args) for index in indexes]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid_results = []
+        for res in results:
+            if isinstance(res, BaseException):  # Учитываем все типы исключений
+                print(f"⚠️ Ошибка в поиске: {str(res)}")
+                continue
+            if isinstance(res, list):  # Явная проверка типа
+                valid_results.extend(res)
+        return valid_results
 
-    def process_query(self, query: str, indexes: List[Optional[FAISS]], search_function, **search_args) -> list:
-        """
-        Главный метод для обработки запроса.
-        :param query: Текстовый запрос
-        :param indexes: FAISS-индексы
-        :param search_function: Функция поиска из методов модуля
-        :return: результаты поиска
-        """
-
-        # Асинхронный поиск
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        results = loop.run_until_complete(self._multi_async_search(query, indexes, search_function, **search_args))
-        loop.close()
-
-        # Сортировка и выбор лучших результатов
-        sorted_results = sorted(results, key=lambda x: x['score'], reverse=True)
-        return sorted_results
 
     def _process_search_results(self,
                                 text_results: List[LangDoc],

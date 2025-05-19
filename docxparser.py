@@ -5,8 +5,7 @@ from rag_processor import *
 import textwrap
 
 constructor = DBConstructor()
-constructor.chunk_size = 800
-
+constructor.chunk_size = 900
 
 root_folder = "/home/home/Projects/Uraltest_beta"
 
@@ -16,13 +15,12 @@ for doc_folder in doc_folders:
     doc_names = os.listdir(doc_folder)
     for doc_name in doc_names:
         cut_name = doc_name.split('.')[-2]
-        out_path = f"{os.getcwd()}/FAISS/{os.path.basename(doc_folder)}/{cut_name}" # Папка, в которую сохранится FAISS: Текущая/FAISS/Имя_файла_документа(Без ".docx")
+        out_path = f"{os.getcwd()}/FAISS-{constructor.chunk_size}/{os.path.basename(doc_folder)}/{cut_name}" # Папка, в которую сохранится FAISS: Текущая/FAISS/Имя_файла_документа(Без ".docx")
         doc_file = os.path.join(doc_folder, doc_name)
-        chunk_file = f"{os.getcwd()}/Chunks/{os.path.basename(doc_folder)}/{cut_name}.txt"
+        chunk_file = f"{os.getcwd()}/Chunks-{constructor.chunk_size}/{os.path.basename(doc_folder)}/{cut_name}.txt"
         print(f"Докум: {doc_file}")
         print(f"База:  {out_path}")
         print(f"Чанки: {chunk_file}")
-        print("-------------------------------")
 
         os.makedirs(os.path.dirname(chunk_file), exist_ok=True) # Директория для чанков: Текущая/Chunks/Имя_файла_документа |(Без ".docx")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)   # Директория для FAISS:  Текущая/FAISS/Имя_файла_документа  |(Без ".docx")
@@ -50,6 +48,7 @@ for doc_folder in doc_folders:
                 file.write(f"Контент:\n{chunk.page_content}\n---\nМетаданные: {chunk.metadata}\n=====================\n")
            # file.write(f"Нарушены связи: {constructor.validate_chunks(parsed_chunks)}\n=============\n")
 
+        print("-------------------------------")
         # text_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "text"]
         # table_chunks = [d for d in prepared_chunks if d.metadata["element_type"] == "table"]
 

@@ -51,70 +51,6 @@ class RAGProcessor(RAG):
     def __init__(self):
         super().__init__()
 
-    def request_to_gigachat(self,
-                            prompts: List[Dict[str, Any]],
-                            verbose=False,
-                            **kwargs
-                            ):
-
-        attempts = 0
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        model = kwargs.get("model", "giga-pro")
-
-
-        payload = {
-            "model": model,
-            "messages": prompts,
-            "temperature": kwargs.get("temperature", 0),
-            **({"max_tokens": kwargs["max_tokens"]} if "max_tokens" in kwargs else {})
-        }
-
-        if verbose:
-            print("===============================================")
-            print("model: ", model)
-            print("-----------------------------------------------")
-            print("system: ")
-            pprint(prompts)
-            print("-----------------------------------------------")
-
-        response = None
-        while attempts < 3:
-            try:
-                response = requests.post(self.api_url, headers=headers, json=payload, verify=self.ssl)
-                response.raise_for_status()  # Проверка статуса HTTP
-                result_text = response.json()["choices"][0]["message"]["content"]
-                if verbose: print("Ответ модели: ", result_text)
-                return True, result_text
-
-            except requests.exceptions.HTTPError as http_err:
-                if response.status_code == 401:
-                    print("Ошибка авторизации: Получаем API-token.")
-                    url = "https://gigachat.devices.sberbank.ru/api/v2/oauth"
-                    payload = {
-                        "client_id": "24c1238f-6318-4cca-b528-5417bc24e59a",
-                        "client_secret": "0e30cc28-3fbb-4dbc-8361-509432fd59ad"
-                    }
-                    try:
-                        response = requests.post(url, json=payload, verify=self.ssl)
-                        response.raise_for_status()
-                        self.access_token = response.json()["access_token"]
-                    except requests.exceptions.HTTPError as http_err1:
-                        print(f"Ошибка ключа: {http_err1}")
-                    attempts += 1
-                else:
-                    print(f"Ошибка HTTP: {http_err}")
-
-            except Exception as e:
-                attempts += 1
-                result = e
-        return False, f"Ошибка генерации"
-
-
-
     def request_to_openai(self, system: str, request: str, temper: float, model="openai/gpt-4o-mini", verbose=False):
         attempts = 1
 
@@ -160,6 +96,72 @@ class RAGProcessor(RAG):
                 if attempts >= 3: return False, f"Ошибка генерации: {e}"
         return False, f"Ошибка генерации"
 
+    def request_to_local(self, system: str, request: str, temper: float, model: str, verbose=False):
+        attempts = 1
+
+        headers = {
+            "Content-Type": "application/json"
+            # Авторизация не требуется для локального сервера
+        }
+
+        payload = {
+            "model": "default",  # Фиксированное значение для llama.cpp
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": request}
+            ],
+            "temperature": temper,
+            "max_tokens": 1024,  # Уменьшаем количество токенов
+            "stream": False
+        }
+
+        if verbose:
+            print("===============================================")
+            print("Локальная модель: ", model)
+            print("-----------------------------------------------")
+            print("system: ", system)
+            print("-----------------------------------------------")
+            print("user: ", request)
+            print("-----------------------------------------------")
+
+        while attempts < 4:  # Увеличим число попыток для стабильности
+            try:
+                # Убираем задержку для локального запроса
+                response = requests.post(
+                    f"{self.api_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=180  # Увеличиваем таймаут для CPU
+                )
+
+                if response.status_code != 200:
+                    raise requests.exceptions.HTTPError(
+                        f"HTTP Error {response.status_code}: {response.text}"
+                    )
+
+                response_data = response.json()
+
+                if 'choices' not in response_data:
+                    raise ValueError("Некорректный формат ответа от модели")
+
+                result_text = response_data['choices'][0]['message']['content']
+
+                if verbose:
+                    print("Ответ модели: ", result_text)
+                    print("-----------------------------------------------")
+                    print("Использовано токенов:", response_data['usage']['total_tokens'])
+
+                return True, result_text
+
+            except Exception as e:
+                print(f"Попытка {attempts} ошибка: {str(e)}")
+                attempts += 1
+                if attempts >= 4:
+                    return False, f"Ошибка генерации: {str(e)}"
+                time.sleep(2)  # Короткая пауза между попытками
+
+        return False, "Неизвестная ошибка генерации"
+
 class EmbeddingsNotInitialized(Exception):
     """Исключение, сигнализирующее о том, что модель эмбеддингов не была инициализирована."""
 
@@ -175,6 +177,10 @@ class MetaCompatibilityError(Exception):
 class DBConstructor(RAGProcessor):
     def __init__(self, embeddings=None):
         super().__init__()
+        self.embedding_model_type = None
+        self.embedding_model_name = None
+        self.distance_strategy = None
+        self.is_e5_model = None
         self.embeddings = embeddings
         self.db_metadata = None
         self.chunk_size = 700
@@ -714,52 +720,104 @@ class DBConstructor(RAGProcessor):
     # ============================================================================
     # Всё, что касается векторизации
 
-    def vectorizator(self, docs: list, db_folder: str, **kwargs):
-        """Универсальный метод векторизации с автонастройкой для E5"""
+    # Загрузчик модели эмбеддингов
+    def load_embedding_model(self, model_name: str, model_type: str = "huggingface", **kwargs) -> bool:
+        """Загружает модель эмбеддингов один раз для последующего использования"""
         try:
-            model_type = kwargs.get("model_type", "huggingface").lower()
-            model_name = kwargs.get("model_name", "")
-            is_e5_model = "e5" in model_name.lower()
-
-            # Валидация параметров
-            if not model_name: return False, "Не указано название модели"
+            self.is_e5_model = "e5" in model_name.lower()
 
             # Автоматические настройки для E5
             encode_kwargs = kwargs.get("encode_kwargs", {})
             model_kwargs = kwargs.get("model_kwargs", {})
 
-            if is_e5_model:
-                # Принудительная нормализация и префиксы
+            if self.is_e5_model:
                 encode_kwargs.update({
                     'normalize_embeddings': True,
                     'batch_size': 64,
                     'convert_to_numpy': True
                 })
-                # Добавляем префиксы к текстам
-                docs = self._add_e5_prefixes(docs)
 
-            # Создаем эмбеддинги
             if model_type == "openai":
-                embeddings = OpenAIEmbeddings(
+                self.embeddings = OpenAIEmbeddings(
                     model=model_name,
                     api_key=self.api_key,
                     base_url=self.api_url
                 )
-                distance_strategy = "COSINE"
+                self.distance_strategy = "COSINE"
 
             elif model_type == "huggingface":
-                embeddings = HuggingFaceEmbeddings(
+                self.embeddings = HuggingFaceEmbeddings(
                     model_name=model_name,
                     model_kwargs=model_kwargs,
                     encode_kwargs=encode_kwargs
                 )
+                self.distance_strategy = "COSINE" if encode_kwargs.get('normalize_embeddings', False) else "L2"
 
-                distance_strategy = "COSINE" if encode_kwargs.get('normalize_embeddings', False) else "L2"
+            self.embedding_model_name = model_name
+            self.embedding_model_type = model_type
+            return True
+
+        except Exception as e:
+            print(f"Ошибка загрузки модели: {str(e)}")
+            return False
+
+    def vectorizator(self, docs: list, db_folder: str, **kwargs):
+        """Универсальный метод векторизации с автонастройкой для E5 и поддержкой предзагруженной модели"""
+        try:
+            # Всегда инициализируем encode_kwargs по умолчанию
+            encode_kwargs = kwargs.get("encode_kwargs", {})
+            model_kwargs = kwargs.get("model_kwargs", {})
+
+            # Если модель уже загружена (через load_embedding_model), используем её
+            if hasattr(self, 'embeddings') and self.embeddings is not None:
+                embeddings = self.embeddings
+                distance_strategy = self.distance_strategy
+                is_e5_model = self.is_e5_model
+                model_name = self.embedding_model_name
+                model_type = self.embedding_model_type
             else:
-                return False, f"Неподдерживаемый тип модели: {model_type}"
+                # Иначе загружаем модель из параметров (старый способ)
+                model_type = kwargs.get("model_type", "huggingface").lower()
+                model_name = kwargs.get("model_name", "")
+                is_e5_model = "e5" in model_name.lower()
+
+                # Валидация параметров
+                if not model_name:
+                    return False, "Не указано название модели"
+
+                # Автоматические настройки для E5
+                if is_e5_model:
+                    encode_kwargs.update({
+                        'normalize_embeddings': True,
+                        'batch_size': 64,
+                        'convert_to_numpy': True
+                    })
+
+                if model_type == "openai":
+                    embeddings = OpenAIEmbeddings(
+                        model=model_name,
+                        api_key=self.api_key,
+                        base_url=self.api_url
+                    )
+                    distance_strategy = "COSINE"
+
+                elif model_type == "huggingface":
+                    embeddings = HuggingFaceEmbeddings(
+                        model_name=model_name,
+                        model_kwargs=model_kwargs,
+                        encode_kwargs=encode_kwargs
+                    )
+                    distance_strategy = "COSINE" if encode_kwargs.get('normalize_embeddings', False) else "L2"
+                else:
+                    return False, f"Неподдерживаемый тип модели: {model_type}"
+
+            # Для E5 моделей добавляем префиксы
+            if is_e5_model:
+                docs = self._add_e5_prefixes(docs)
 
             # Проверка на пустые документы
-            if not docs: return False, "Нет данных для векторизации"
+            if not docs:
+                return False, "Нет данных для векторизации"
 
             # Создаем и сохраняем индекс
             self.db = FAISS.from_documents(
@@ -774,7 +832,8 @@ class DBConstructor(RAGProcessor):
                 "embedding_model": model_name,
                 "model_type": model_type,
                 "dimension": self._get_embedding_dimension(embeddings),
-                "normalized": encode_kwargs.get('normalize_embeddings', False),
+                "normalized": encode_kwargs.get('normalize_embeddings', False) if not hasattr(self, 'embeddings') else (
+                            self.distance_strategy == "COSINE"),
                 "distance_strategy": distance_strategy,
                 "is_e5_model": is_e5_model
             }

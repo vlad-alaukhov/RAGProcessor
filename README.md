@@ -89,6 +89,9 @@ opencv-python-headless==4.11.0.86
 
 После установки проверьте зависимости:
 pip list | grep -E "torch|sentence-transformers|faiss"
+```
+## Как установить пакет для CPU локально из GitHub
 
-
-
+``` python
+pip install git+https://github.com/vlad-alaukhov/RAGProcessor.git --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+```

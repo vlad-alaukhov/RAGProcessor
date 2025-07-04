@@ -942,6 +942,7 @@ class DBConstructor(RAGProcessor):
                 if not main_meta: raise ValueError("Метаданные базы загружены неверно или их не существует")
                 if not self._check_compatibility(main_meta, current_meta):
                     raise MetaCompatibilityError()
+            if not current_meta: current_meta = main_meta
 
             load_meta = f"_load_metadata: {meta_code}"
             result["is_e5_model"] = current_meta.get("is_e5_model", False)
@@ -1377,7 +1378,7 @@ class DBConstructor(RAGProcessor):
         if index is None: return []
 
         # Получение эмбеддинга запроса
-        query_embedding = self.embedding_model_name.embed_query(query)
+        query_embedding = self.embeddings.embed_query(query)
         # MMR поиск с исходными оценками
         results = index.max_marginal_relevance_search_with_score_by_vector(
             query_embedding,
@@ -1385,12 +1386,15 @@ class DBConstructor(RAGProcessor):
         )
 
         # Нормализация оценок из [-1, 1] в [0, 1]
-        normalized_results = []
+        formatted_results = []
         for doc, raw_score in results:
-            normalized_score = (raw_score + 1) / 2.0
-            normalized_results.append((doc, normalized_score))
+            formatted_results.append({
+                "content": doc.page_content,
+                "score": round(float(raw_score), 6),
+                "metadata": doc.metadata
+            })
 
-        return normalized_results
+        return formatted_results
 
     # --------------------------------------------------
     # Асинхронный поиск
@@ -1400,6 +1404,7 @@ class DBConstructor(RAGProcessor):
         """Преобразование метода в асинхронный"""
         return self.formatted_scored_sim_search_by_cos(index, query, **search_args)
 
+    @async_wrapper
     def aformatted_scored_mmr_search_by_vector(self, index: Optional[FAISS], query: str, **search_args) -> list:
         return self.formatted_scored_mmr_search_by_vector(index, query, **search_args)
 

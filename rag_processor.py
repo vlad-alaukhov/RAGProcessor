@@ -1364,14 +1364,44 @@ class DBConstructor(RAGProcessor):
             })
         return formatted_results
 
+    # Синхронный поиск по максимальной предельной релевантности
+
+    def formatted_scored_mmr_search_by_vector(self, index: Optional[FAISS], query: str, **search_args: Any) -> list:
+        """
+        Cинхронный поиск на базе max_marginal_relevance_search_with_score_by_vector.
+        :param index: FAISS-индекс из langchain
+        :param query: Запрос (вектор)
+        :param k:
+        :return: список словарей с результатами поиска
+        """
+        if index is None: return []
+
+        # Получение эмбеддинга запроса
+        query_embedding = self.embedding_model_name.embed_query(query)
+        # MMR поиск с исходными оценками
+        results = index.max_marginal_relevance_search_with_score_by_vector(
+            query_embedding,
+            **search_args
+        )
+
+        # Нормализация оценок из [-1, 1] в [0, 1]
+        normalized_results = []
+        for doc, raw_score in results:
+            normalized_score = (raw_score + 1) / 2.0
+            normalized_results.append((doc, normalized_score))
+
+        return normalized_results
+
     # --------------------------------------------------
     # Асинхронный поиск
 
     @async_wrapper
     def aformatted_scored_sim_search_by_cos(self, index: Optional[FAISS], query: str, **search_args) -> list:
-        """Преобразование методы в асинхронный"""
+        """Преобразование метода в асинхронный"""
         return self.formatted_scored_sim_search_by_cos(index, query, **search_args)
 
+    def aformatted_scored_mmr_search_by_vector(self, index: Optional[FAISS], query: str, **search_args) -> list:
+        return self.formatted_scored_mmr_search_by_vector(index, query, **search_args)
 
     async def multi_async_search(
             self,
@@ -1382,7 +1412,7 @@ class DBConstructor(RAGProcessor):
     ) -> list:
         """
         Асинхронный поиск по нескольким индексам с одним запросом.
-        :param query: Запрос (вектор)
+        :param query: Запрос (строка)
         :param indexes: Список FAISS-индексов
         :param search_function: Асинхронная функция поиска
         :return: список словарей с результатами поиска

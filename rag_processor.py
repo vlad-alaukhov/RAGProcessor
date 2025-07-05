@@ -276,6 +276,10 @@ class DBConstructor(RAGProcessor):
         elements = []
         for elem in doc.element.body:
             if elem.tag.endswith('p'):
+                p = DocxParagraph(elem, doc)
+                # Пропускаем заголовок документа
+                if p.style.name == 'Heading 1':
+                    continue
                 elements.append(('p', DocxParagraph(elem, doc)))
             elif elem.tag.endswith('tbl'):
                 elements.append(('tbl', DocxTable(elem, doc)))
@@ -1192,156 +1196,6 @@ class DBConstructor(RAGProcessor):
 
 # ==================================================================================================
 # Поиск
-    def hybrid_mmr_search(
-            self,
-            query: str,
-            db_result: Dict[str, Any],
-            k: int = 5,
-            lambda_mult: float = 0.5,
-            **kwargs
-    ): # -> List[LangDoc]:
-        """Аналог mmr_search для предзагруженных баз"""
-
-        result = {"texts": [], "tables": []}
-        if not db_result.get("text_db") and not db_result.get("table_db"):
-            raise ValueError("Нет данных для поиска")
-
-        text_results = []
-        if db_result["text_db"]:
-            text_results = db_result["text_db"].max_marginal_relevance_search(
-                query, k=k, lambda_mult=lambda_mult, **kwargs
-            )
-            result["texts"] = [{
-                "content": doc.page_content,
-                "metadata": doc.metadata
-            } for doc in text_results]
-
-
-        table_results = []
-        if db_result["table_db"]:
-            table_results = db_result["table_db"].max_marginal_relevance_search(
-                query, k=k, lambda_mult=lambda_mult, **kwargs
-            )
-            result["tables"] = [{
-                "content": doc.page_content,
-                "metadata": doc.metadata
-            } for doc in table_results]
-
-        return result # self._process_search_results(text_results, table_results, db_result, k)
-
-    def hybrid_sim_search(self,
-                                 query: str,
-                                 db_result: Dict[str, Any],
-                                 k: int = 5,
-                                 **kwargs): # -> Dict[str, List[Dict[str, Any]]]:
-
-        result = {"texts": [], "tables": []}
-        if not db_result.get("text_db") and not db_result.get("table_db"):
-            raise ValueError("Нет данных для поиска")
-
-        text_results = []
-        if db_result["text_db"]:
-            text_results = db_result["text_db"].similarity_search(query, k=k, **kwargs)
-            result["texts"] = [{
-                "content": doc.page_content,
-                "metadata": doc.metadata
-            } for doc in text_results]
-
-        table_results = []
-        if db_result["table_db"]:
-            table_results = db_result["table_db"].similarity_search(query, k=k, **kwargs)
-            result["tables"] = [{
-                "content": doc.page_content,
-                "metadata": doc.metadata
-            } for doc in table_results]
-
-        return result # self._process_search_results(text_results, table_results, db_result, k)
-
-    def hybrid_search_with_scores(self,
-                                 query: str,
-                                 db_result: Dict[str, Any],
-                                 k: int = 5,
-                                 **kwargs): # -> Dict[str, List[Dict[str, Any]]]:
-
-        """Поиск с оценкой релевантности. Возвращает топ-3 текста и таблицы."""
-        result = {"texts": [], "tables": []}
-
-        try:
-            # Поиск в текстовой базе
-            if db_result.get("text_db"):
-                text_results = db_result["text_db"].similarity_search_with_relevance_scores(query, k=k, **kwargs)
-                # Сортировка и выбор топ-3
-                sorted_texts = sorted(text_results, key=lambda x: x[1], reverse=True)
-                result["texts"] = [{
-                    "content": doc.page_content,
-                    "score": round(score, 6),
-                    "metadata": doc.metadata
-                } for doc, score in sorted_texts]
-
-            # Поиск в табличной базе
-            if db_result.get("table_db"):
-                table_results = db_result["table_db"].similarity_search_with_score(query, k=k, **kwargs)
-                # Сортировка и выбор топ-3
-                sorted_tables = sorted(table_results, key=lambda x: x[1], reverse=False)
-                result["tables"] = [{
-                    "content": doc.page_content,
-                    "score": round(score, 6),
-                    "metadata": doc.metadata
-                } for doc, score in sorted_tables]
-
-        except Exception as e:
-            print(f"Ошибка поиска: {str(e)}")
-
-        return result
-
-    def hybrid_sim_search_score_by_vector(self,
-                                 query: str,
-                                 db_result: Dict[str, Any],
-                                 k: int = 5,
-                                 **kwargs): # -> Dict[str, List[Dict[str, Any]]]:
-
-        """Поиск с оценкой релевантности. Возвращает топ-3 текста и таблицы."""
-        result = {"texts": [], "tables": []}
-
-        embs_txt = HuggingFaceEmbeddings(
-            model_name="ai-forever/sbert_large_nlu_ru",
-            encode_kwargs={"normalize_embeddings": True}
-        )
-
-        embs_tab = HuggingFaceEmbeddings(
-            model_name="deepset/all-mpnet-base-v2-table",
-            encode_kwargs={"normalize_embeddings": False}
-        )
-
-        query_txt = embs_txt.embed_query(query)
-        query_tab = embs_tab.embed_query(query)
-
-        try:
-            # Поиск в текстовой базе
-            if db_result.get("text_db"):
-                text_results = db_result["text_db"].similarity_search_with_score_by_vector(query_txt, k=k)
-
-                result["texts"] = [{
-                    "content": doc.page_content,
-                    "score": round(score, 6),
-                    "metadata": doc.metadata
-                } for doc, score in text_results]
-
-            # Поиск в табличной базе
-            if db_result.get("table_db"):
-                table_results = db_result["table_db"].similarity_search_with_score_by_vector(query_tab, k=k)
-
-                result["tables"] = [{
-                    "content": doc.page_content,
-                    "score": round(score, 6),
-                    "metadata": doc.metadata
-                } for doc, score in table_results]
-
-        except Exception as e:
-            print(f"Ошибка поиска: {str(e)}")
-
-        return result
-
     @staticmethod
     def formatted_scored_sim_search_by_cos(index: Optional[FAISS], query: str, **search_args) -> list:
         """
@@ -1380,17 +1234,21 @@ class DBConstructor(RAGProcessor):
         # Получение эмбеддинга запроса
         query_embedding = self.embeddings.embed_query(query)
         # MMR поиск с исходными оценками
-        results = index.max_marginal_relevance_search_with_score_by_vector(
+        results = index.max_marginal_relevance_search_by_vector(
             query_embedding,
             **search_args
         )
 
         # Нормализация оценок из [-1, 1] в [0, 1]
         formatted_results = []
-        for doc, raw_score in results:
+        for doc in results:
+            doc_embedding = self.embeddings.embed_query(doc.page_content)
+            cosine_sim = np.dot(query_embedding, doc_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+            )
             formatted_results.append({
                 "content": doc.page_content,
-                "score": round(float(raw_score), 6),
+                "score":  cosine_sim,
                 "metadata": doc.metadata
             })
 

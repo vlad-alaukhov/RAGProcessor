@@ -21,7 +21,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.embeddings import Embeddings
-
+from transformers import logging
 import functools
 import asyncio
 from sentence_transformers import SentenceTransformer
@@ -1151,6 +1151,7 @@ class DBConstructor(RAGProcessor):
                 )
 
             elif metadata['model_type'] == "huggingface":
+                logging.set_verbosity_error()
                 return "Успешно", HuggingFaceEmbeddings(
                     model_name=model_name,
                     encode_kwargs={'normalize_embeddings': metadata['normalized']}
@@ -1219,8 +1220,30 @@ class DBConstructor(RAGProcessor):
             })
         return formatted_results
 
-    # Синхронный поиск по максимальной предельной релевантности
+    @staticmethod
+    def formatted_scored_sim_search(index: Optional[FAISS], query: str, **search_args) -> list:
+        """
+        Cинхронный поиск на базе similarity_search_with_relevance_scores.
+        :param index: FAISS-индекс из langchain
+        :param query: Запрос (вектор)
+        :param k:
+        :return: список словарей с результатами поиска
+        """
+        k = search_args.pop("k", 4)
+        kwargs = search_args.copy()
+        # Стандартный поиск по совпадению на основе косинусных расстояний который возвращает
+        results = index.similarity_search_with_score(query, k=k, **kwargs)
+        # Преобразуем результаты в требуемый формат
+        formatted_results = []
+        for doc, distance in results:
+            formatted_results.append({
+                "content": doc.page_content,
+                "score": round(float(1 / (1 + distance)), 6),
+                "metadata": doc.metadata
+            })
+        return formatted_results
 
+    # Синхронный поиск по максимальной предельной релевантности с очками
     def formatted_scored_mmr_search_by_vector(self, index: Optional[FAISS], query: str, **search_args: Any) -> list:
         """
         Cинхронный поиск на базе max_marginal_relevance_search_with_score_by_vector.
@@ -1234,21 +1257,17 @@ class DBConstructor(RAGProcessor):
         # Получение эмбеддинга запроса
         query_embedding = self.embeddings.embed_query(query)
         # MMR поиск с исходными оценками
-        results = index.max_marginal_relevance_search_by_vector(
+        results = index.max_marginal_relevance_search_with_score_by_vector(
             query_embedding,
             **search_args
         )
 
-        # Нормализация оценок из [-1, 1] в [0, 1]
+        # Расчет косинусного расстояния
         formatted_results = []
-        for doc in results:
-            doc_embedding = self.embeddings.embed_query(doc.page_content)
-            cosine_sim = np.dot(query_embedding, doc_embedding) / (
-                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
-            )
+        for doc, score in results:
             formatted_results.append({
                 "content": doc.page_content,
-                "score":  cosine_sim,
+                "score":  score,
                 "metadata": doc.metadata
             })
 
@@ -1256,6 +1275,10 @@ class DBConstructor(RAGProcessor):
 
     # --------------------------------------------------
     # Асинхронный поиск
+    @async_wrapper
+    def aformatted_scored_sim_search(self, index: Optional[FAISS], query: str, **search_args) -> list:
+        """Преобразование метода в асинхронный"""
+        return self.formatted_scored_sim_search(index, query, **search_args)
 
     @async_wrapper
     def aformatted_scored_sim_search_by_cos(self, index: Optional[FAISS], query: str, **search_args) -> list:
@@ -1265,6 +1288,44 @@ class DBConstructor(RAGProcessor):
     @async_wrapper
     def aformatted_scored_mmr_search_by_vector(self, index: Optional[FAISS], query: str, **search_args) -> list:
         return self.formatted_scored_mmr_search_by_vector(index, query, **search_args)
+
+    async def aformatted_scored_mmr_search_with_cosine_sorting(self, index: FAISS, query: str, **search_args) -> list:
+        # 1. Асинхронно получаем вектор запроса
+        query_embedding = await self.embeddings.aembed_query(query)
+
+        # 2. Синхронный MMR-поиск (FAISS не поддерживает асинхрон)
+        results = index.max_marginal_relevance_search_by_vector(
+            embedding=query_embedding,
+            **search_args
+        )
+
+        # 3. Параллельная векторизация документов
+        embedding_tasks = [
+            self._get_doc_emb(doc.page_content, n)
+            for n, doc in enumerate(results)
+        ]
+        doc_embeddings = await asyncio.gather(*embedding_tasks)
+
+        # 4. Расчет косинусных сходств
+        formatted_results = []
+        query_norm = np.linalg.norm(query_embedding)
+        for doc, doc_emb in zip(results, doc_embeddings):
+            doc_norm = np.linalg.norm(doc_emb)
+            cosine_sim = np.dot(query_embedding, doc_emb) / (query_norm * doc_norm)
+
+            formatted_results.append({
+                "content": doc.page_content,
+                "score": cosine_sim,
+                "metadata": doc.metadata
+            })
+
+        # 5. Сортировка по убыванию сходства
+        return sorted(formatted_results, key=lambda x: x["score"], reverse=True)
+
+    @async_wrapper
+    def _get_doc_emb(self, doc: str, n: int):
+        out = self.embeddings.embed_query(doc)
+        return out
 
     async def multi_async_search(
             self,
@@ -1290,7 +1351,6 @@ class DBConstructor(RAGProcessor):
             if isinstance(res, list):  # Явная проверка типа
                 valid_results.extend(res)
         return valid_results
-
 
     def _process_search_results(self,
                                 text_results: List[LangDoc],

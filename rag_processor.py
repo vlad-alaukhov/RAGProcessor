@@ -278,8 +278,8 @@ class DBConstructor(RAGProcessor):
             if elem.tag.endswith('p'):
                 # p = DocxParagraph(elem, doc)
                 # # Пропускаем заголовок документа
-                # if p.style.name == 'Heading 1':
-                #     continue
+                if elem.style.name == 'Heading 1':
+                    continue
                 elements.append(('p', DocxParagraph(elem, doc)))
             elif elem.tag.endswith('tbl'):
                 elements.append(('tbl', DocxTable(elem, doc)))
